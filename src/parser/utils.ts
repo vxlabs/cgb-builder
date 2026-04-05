@@ -69,6 +69,18 @@ export function detectLanguage(filePath: string): SupportedLanguage | null {
     '.py': 'python',
     '.go': 'go',
     '.java': 'java',
+    '.rs': 'rust',
+    '.rb': 'ruby',
+    '.php': 'php',
+    '.c': 'c',
+    '.h': 'c',
+    '.cpp': 'cpp',
+    '.cc': 'cpp',
+    '.cxx': 'cpp',
+    '.hpp': 'cpp',
+    '.hh': 'cpp',
+    '.kt': 'kotlin',
+    '.kts': 'kotlin',
   };
   return MAP[ext] ?? null;
 }

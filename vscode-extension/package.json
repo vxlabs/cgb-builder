@@ -1,0 +1,76 @@
+{
+  "name": "cgb-explorer",
+  "displayName": "CGB Explorer",
+  "description": "Interactive code graph exploration powered by Code Graph Builder",
+  "version": "0.1.0",
+  "publisher": "cgb",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:cgb.openGraph",
+    "workspaceContains:**/.cgb/graph.db"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cgb.openGraph",
+        "title": "CGB: Open Graph Explorer",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "cgb.showDeps",
+        "title": "CGB: Show Dependencies"
+      },
+      {
+        "command": "cgb.showImpact",
+        "title": "CGB: Show Impact"
+      },
+      {
+        "command": "cgb.showStats",
+        "title": "CGB: Show Graph Stats"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "cgb.showDeps",
+          "group": "cgb"
+        },
+        {
+          "command": "cgb.showImpact",
+          "group": "cgb"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CGB Explorer",
+      "properties": {
+        "cgb.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to graph.db (defaults to <workspaceRoot>/.cgb/graph.db)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -watch -p tsconfig.json",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.19.39",
+    "@types/vscode": "^1.110.0",
+    "typescript": "^5.9.3"
+  }
+}

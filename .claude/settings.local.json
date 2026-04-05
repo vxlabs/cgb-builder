@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"CREATE TABLE\" /c/Users/sadiq/Desktop/Projects/cgb-builder-wiki/code-review-graph-main/code_review_graph/*.py)",
+      "Bash(npm run:*)",
+      "Bash(npm install:*)"
+    ]
+  }
+}

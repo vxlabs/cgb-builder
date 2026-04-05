@@ -1,0 +1,18 @@
+{
+  "id": "cgb-builder",
+  "name": "Code Graph Builder",
+  "tagline": "Understand any codebase instantly with a queryable code graph",
+  "description": "Code Graph Builder scans TypeScript, Python, Rust, Go, and 8 other languages and builds a persistent SQLite graph database. AI agents can call 30+ MCP tools to explore dependencies, estimate change impact, detect architectural communities, find dead code, generate documentation, and more.",
+  "version": "1.0.0",
+  "homepage": "https://github.com/your-org/code_graph_builder",
+  "categories": ["developer-tools", "code-analysis", "refactoring"],
+  "tags": ["code-graph", "static-analysis", "mcp", "typescript", "python", "rust", "impact-analysis", "architecture"],
+  "install": {
+    "npm": "npm install -g cgb-builder",
+    "post_install": "cgb install claude"
+  },
+  "badge": {
+    "label": "MCP Tools",
+    "count": 30
+  }
+}

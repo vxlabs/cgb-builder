@@ -1,6 +1,6 @@
 {
   "name": "cgb-builder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Automated polyglot code graph builder for AI-ready context bundles",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,6 +10,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "exports": {
@@ -56,6 +57,8 @@
     "chokidar": "^3.6.0",
     "commander": "^12.0.0",
     "glob": "^10.3.12",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
     "sql.js": "^1.12.0",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.20.8"

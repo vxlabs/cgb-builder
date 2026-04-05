@@ -12,7 +12,9 @@ export type NodeKind =
   | 'interface'
   | 'function'
   | 'method'
-  | 'external_dep';
+  | 'external_dep'
+  | 'type' // type alias, enum, type definition
+  | 'test'; // test file or test suite
 
 export interface GraphNode {
   id: string; // stable UID: e.g. file:src/foo.ts, class:src/foo.ts#Foo
@@ -36,7 +38,10 @@ export type EdgeKind =
   | 'calls' // function calls another function
   | 'inherits' // class extends another
   | 'implements' // class implements interface
-  | 'exports'; // module exports a symbol
+  | 'exports' // module exports a symbol
+  | 'contains' // file/class contains a child symbol
+  | 'tested_by' // source file tested by a test file
+  | 'depends_on'; // generic dependency (non-import)
 
 export interface GraphEdge {
   id: string; // "fromId|kind|toId"
@@ -62,7 +67,19 @@ export interface FileRecord {
 
 // ─── Language Support ────────────────────────────────────────────────────────
 
-export type SupportedLanguage = 'typescript' | 'javascript' | 'csharp' | 'python' | 'go' | 'java';
+export type SupportedLanguage =
+  | 'typescript'
+  | 'javascript'
+  | 'csharp'
+  | 'python'
+  | 'go'
+  | 'java'
+  | 'rust'
+  | 'ruby'
+  | 'php'
+  | 'c'
+  | 'cpp'
+  | 'kotlin';
 
 export const LANGUAGE_EXTENSIONS: Record<SupportedLanguage, string[]> = {
   typescript: ['.ts', '.tsx'],
@@ -71,6 +88,12 @@ export const LANGUAGE_EXTENSIONS: Record<SupportedLanguage, string[]> = {
   python: ['.py'],
   go: ['.go'],
   java: ['.java'],
+  rust: ['.rs'],
+  ruby: ['.rb'],
+  php: ['.php'],
+  c: ['.c', '.h'],
+  cpp: ['.cpp', '.cc', '.cxx', '.hpp', '.hh'],
+  kotlin: ['.kt', '.kts'],
 };
 
 // ─── Parsed Output (from adapters) ───────────────────────────────────────────
@@ -112,6 +135,107 @@ export interface PathResult {
   to: GraphNode;
   path: GraphNode[];
   edges: GraphEdge[];
+}
+
+// ─── Git Integration Types ────────────────────────────────────────────────────
+
+export interface GitChange {
+  filePath: string;
+  status: 'added' | 'modified' | 'deleted' | 'renamed';
+  oldPath?: string;
+  linesAdded: number;
+  linesRemoved: number;
+}
+
+export interface FileChangeDetail {
+  file: GitChange;
+  nodesAffected: number;
+  blastRadius: number;
+  riskScore: number;
+  securityRelevant: boolean;
+  hasTests: boolean;
+  riskFactors: {
+    blastRadiusScore: number;
+    securityKeywordScore: number;
+    fileTypeScore: number;
+    changeSizeScore: number;
+    testCoverageScore: number;
+    total: number;
+  };
+}
+
+export interface ChangeAnalysis {
+  summary: {
+    added: number;
+    modified: number;
+    deleted: number;
+    renamed: number;
+    totalChangedLines: number;
+  };
+  changes: FileChangeDetail[];
+  overallRisk: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface ReviewContext {
+  base: string;
+  changedFiles: string[];
+  affectedFiles: string[];
+  relevantTests: string[];
+  riskSummary: ChangeAnalysis;
+  focusAreas: string[];
+  tokenEstimate: number;
+}
+
+// ─── Embedding Types ──────────────────────────────────────────────────────────
+
+export interface EmbeddingRecord {
+  nodeId: string;
+  vector: Uint8Array; // Float32 encoded
+  textHash: string; // SHA-256 of the text that was embedded
+  provider: string; // e.g. "local", "google", "minimax"
+}
+
+// ─── Community Types ──────────────────────────────────────────────────────────
+
+export interface CommunityRecord {
+  id: number;
+  name: string;
+  level: number; // 0 = top-level, 1 = sub-community
+  parentId: number | null;
+  cohesion: number; // 0..1: internal_edges / (internal + external)
+  size: number; // node count
+  dominantLanguage: string | null;
+  description: string;
+  createdAt: number; // unix ms
+}
+
+// ─── Refactoring Types ────────────────────────────────────────────────────────
+
+export interface RefactorEdit {
+  file: string; // absolute path
+  line: number | null; // target line number, null = first-occurrence fallback
+  old: string; // text to replace
+  new: string; // replacement text
+  confidence: number; // 0..1
+}
+
+export interface RefactorPreview {
+  refactorId: string; // 8-char hex
+  type: 'rename';
+  oldName: string;
+  newName: string;
+  nodeId: string;
+  edits: RefactorEdit[];
+  stats: { filesAffected: number; occurrences: number };
+  createdAt: number; // unix ms
+}
+
+export interface RefactorResult {
+  status: 'applied' | 'not_found' | 'expired' | 'error';
+  error?: string;
+  applied?: boolean;
+  filesModified?: number;
+  editsApplied?: number;
 }
 
 // ─── Context Bundle ───────────────────────────────────────────────────────────

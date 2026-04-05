@@ -13,6 +13,11 @@ import { CSharpAdapter } from './adapters/csharp.js';
 import { PythonAdapter } from './adapters/python.js';
 import { GoAdapter } from './adapters/go.js';
 import { JavaAdapter } from './adapters/java.js';
+import { RustAdapter } from './adapters/rust.js';
+import { RubyAdapter } from './adapters/ruby.js';
+import { PhpAdapter } from './adapters/php.js';
+import { CAdapter } from './adapters/c.js';
+import { KotlinAdapter } from './adapters/kotlin.js';
 import { detectLanguage, hashContent } from './utils.js';
 import type { SupportedLanguage, GraphNode, GraphEdge } from '../types.js';
 
@@ -25,6 +30,12 @@ const ADAPTERS: Record<SupportedLanguage, LanguageAdapter> = {
   python: new PythonAdapter(),
   go: new GoAdapter(),
   java: new JavaAdapter(),
+  rust: new RustAdapter(),
+  ruby: new RubyAdapter(),
+  php: new PhpAdapter(),
+  c: new CAdapter('c'),
+  cpp: new CAdapter('cpp'),
+  kotlin: new KotlinAdapter(),
 };
 
 /** Default glob patterns to ignore */
@@ -169,14 +180,25 @@ export class Parser {
 
   /** Discover all parseable source files under projectRoot */
   private async discoverFiles(): Promise<string[]> {
-    const extensions = ['ts', 'tsx', 'js', 'jsx', 'mjs', 'cs', 'py', 'go', 'java'];
+    const extensions = [
+      'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+      'cs',
+      'py',
+      'go',
+      'java',
+      'rs',
+      'rb',
+      'php',
+      'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'hh',
+      'kt', 'kts',
+    ];
     const pattern = `**/*.{${extensions.join(',')}}`;
 
     const files = await glob(pattern, {
       cwd: this.projectRoot,
       ignore: DEFAULT_IGNORES,
       absolute: true,
-      nodir: true, // never return directories that match the extension pattern
+      nodir: true,
     });
 
     return files;
