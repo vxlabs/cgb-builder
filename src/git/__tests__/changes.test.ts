@@ -21,7 +21,7 @@ import * as path from 'path';
 import { GraphDb } from '../../graph/db.js';
 import { GraphEngine } from '../../graph/engine.js';
 import type { GraphNode, GraphEdge } from '../../types.js';
-import { analyzeChanges, collectBlastFiles } from '../changes.js';
+import { analyzeChanges, collectBlastFiles, multiSourceImpact } from '../changes.js';
 import type { GitChange } from '../diff.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -44,26 +44,98 @@ function makeTmpDir(): string {
 
 const ROOT = '/proj';
 
-const F_AUTH    = `file:${ROOT}/src/auth.ts`;
-const F_CRYPTO  = `file:${ROOT}/src/crypto.ts`;
-const F_UTILS   = `file:${ROOT}/src/utils.ts`;
-const F_CONFIG  = `file:${ROOT}/src/config.ts`;
-const F_UNUSED  = `file:${ROOT}/src/unused.ts`;
-const F_TEST    = `file:${ROOT}/test/auth.test.ts`;
+const F_AUTH = `file:${ROOT}/src/auth.ts`;
+const F_CRYPTO = `file:${ROOT}/src/crypto.ts`;
+const F_UTILS = `file:${ROOT}/src/utils.ts`;
+const F_CONFIG = `file:${ROOT}/src/config.ts`;
+const F_UNUSED = `file:${ROOT}/src/unused.ts`;
+const F_TEST = `file:${ROOT}/test/auth.test.ts`;
 
 const FIXTURE_NODES: GraphNode[] = [
-  node({ id: F_AUTH,   kind: 'file', name: 'auth.ts',      filePath: `${ROOT}/src/auth.ts`,       description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: F_CRYPTO, kind: 'file', name: 'crypto.ts',    filePath: `${ROOT}/src/crypto.ts`,     description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: F_UTILS,  kind: 'file', name: 'utils.ts',     filePath: `${ROOT}/src/utils.ts`,      description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: F_CONFIG, kind: 'file', name: 'config.ts',    filePath: `${ROOT}/src/config.ts`,     description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: F_UNUSED, kind: 'file', name: 'unused.ts',    filePath: `${ROOT}/src/unused.ts`,     description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: F_TEST,   kind: 'file', name: 'auth.test.ts', filePath: `${ROOT}/test/auth.test.ts`, description: '', isExternal: false, language: 'typescript', meta: '{}' }),
+  node({
+    id: F_AUTH,
+    kind: 'file',
+    name: 'auth.ts',
+    filePath: `${ROOT}/src/auth.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: F_CRYPTO,
+    kind: 'file',
+    name: 'crypto.ts',
+    filePath: `${ROOT}/src/crypto.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: F_UTILS,
+    kind: 'file',
+    name: 'utils.ts',
+    filePath: `${ROOT}/src/utils.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: F_CONFIG,
+    kind: 'file',
+    name: 'config.ts',
+    filePath: `${ROOT}/src/config.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: F_UNUSED,
+    kind: 'file',
+    name: 'unused.ts',
+    filePath: `${ROOT}/src/unused.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: F_TEST,
+    kind: 'file',
+    name: 'auth.test.ts',
+    filePath: `${ROOT}/test/auth.test.ts`,
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
 ];
 
 const FIXTURE_EDGES: GraphEdge[] = [
-  edge({ id: `${F_AUTH}|imports|${F_CRYPTO}`,  fromId: F_AUTH,   toId: F_CRYPTO, kind: 'imports', reason: 'crypto' }),
-  edge({ id: `${F_CRYPTO}|imports|${F_UTILS}`, fromId: F_CRYPTO, toId: F_UTILS,  kind: 'imports', reason: 'utils'  }),
-  edge({ id: `${F_TEST}|imports|${F_AUTH}`,    fromId: F_TEST,   toId: F_AUTH,   kind: 'imports', reason: 'test'   }),
+  edge({
+    id: `${F_AUTH}|imports|${F_CRYPTO}`,
+    fromId: F_AUTH,
+    toId: F_CRYPTO,
+    kind: 'imports',
+    reason: 'crypto',
+  }),
+  edge({
+    id: `${F_CRYPTO}|imports|${F_UTILS}`,
+    fromId: F_CRYPTO,
+    toId: F_UTILS,
+    kind: 'imports',
+    reason: 'utils',
+  }),
+  edge({
+    id: `${F_TEST}|imports|${F_AUTH}`,
+    fromId: F_TEST,
+    toId: F_AUTH,
+    kind: 'imports',
+    reason: 'test',
+  }),
 ];
 
 // ─── test setup ───────────────────────────────────────────────────────────────
@@ -170,7 +242,9 @@ describe('analyzeChanges', () => {
   test('changes are sorted by riskScore descending', () => {
     const analysis = analyzeChanges(GIT_CHANGES, db, engine);
     for (let i = 1; i < analysis.changes.length; i++) {
-      expect(analysis.changes[i - 1].riskScore).toBeGreaterThanOrEqual(analysis.changes[i].riskScore);
+      expect(analysis.changes[i - 1].riskScore).toBeGreaterThanOrEqual(
+        analysis.changes[i].riskScore,
+      );
     }
   });
 
@@ -210,5 +284,51 @@ describe('collectBlastFiles', () => {
     const emptyAnalysis = analyzeChanges([], db, engine);
     const blast = collectBlastFiles(emptyAnalysis, db);
     expect(blast).toEqual([]);
+  });
+});
+
+// ─── multiSourceImpact ────────────────────────────────────────────────────────
+
+describe('multiSourceImpact', () => {
+  test('3 seeds sharing dependents: each dependent appears once at its minimum depth', async () => {
+    const dir = makeTmpDir();
+    const d = new GraphDb(dir);
+    await d.init();
+    const ids = ['x1', 'x2', 'x3', 'd1', 'd2', 'd3'].map((n) => `file:/p/${n}.ts`);
+    const [x1, x2, x3, d1, d2, d3] = ids;
+    for (const id of ids) {
+      const name = id.split('/').pop()!;
+      d.upsertNode(
+        node({
+          id,
+          kind: 'file',
+          name,
+          filePath: id.slice(5),
+          description: '',
+          isExternal: false,
+          language: 'typescript',
+          meta: '{}',
+        }),
+      );
+    }
+    // d1 imports x1 and x2; d2 imports d1 (depth 2) AND x3 (depth 1); d3 imports d2
+    const imp = (from: string, to: string) =>
+      d.upsertEdge(
+        edge({ id: `${from}|imports|${to}`, fromId: from, toId: to, kind: 'imports', reason: '' }),
+      );
+    imp(d1, x1);
+    imp(d1, x2);
+    imp(d2, d1);
+    imp(d2, x3);
+    imp(d3, d2);
+
+    const reached = multiSourceImpact(d, [x1, x2, x3]);
+    expect(Array.from(reached.keys()).sort()).toEqual([d1, d2, d3].sort());
+    expect(reached.get(d1)!.depth).toBe(1);
+    expect(reached.get(d2)!.depth).toBe(1); // via x3, not 2 via d1
+    expect(reached.get(d3)!.depth).toBe(2);
+
+    d.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

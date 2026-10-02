@@ -7,6 +7,8 @@
  *  - minimax  : MiniMax embo-01 REST API (requires MINIMAX_API_KEY)
  */
 
+import { warnOnce } from '../util/log.js';
+
 // ─── Interface ────────────────────────────────────────────────────────────────
 
 export interface EmbeddingProvider {
@@ -29,14 +31,16 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     if (this.pipeline) return;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- untyped third-party/dynamic value; behaviour unchanged
       const { pipeline } = require('@xenova/transformers') as {
         pipeline: (task: string, model: string) => Promise<unknown>;
       };
       this.pipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
     } catch {
-      throw new Error(
-        '@xenova/transformers is not installed. Run: npm install @xenova/transformers',
-      );
+      const msg =
+        '@xenova/transformers is not installed (optional). Run: npm install @xenova/transformers';
+      warnOnce('embed', 'xenova-missing', msg);
+      throw new Error(msg);
     }
   }
 
@@ -44,7 +48,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     await this.load();
     const results: number[][] = [];
     for (const text of texts) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
       const output = await this.pipeline(text, { pooling: 'mean', normalize: true });
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       results.push(Array.from(output.data as Float32Array));

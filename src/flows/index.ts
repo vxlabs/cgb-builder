@@ -13,6 +13,7 @@
  */
 
 import type { GraphDb } from '../graph/db.js';
+import type { GraphNode } from '../types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,10 @@ export interface EntryPoint {
   kind: string;
   fanOut: number;
   fanIn: number;
+  signature?: string;
+  startLine?: number;
+  endLine?: number;
+  exported?: boolean;
 }
 
 export interface CallChainStep {
@@ -31,6 +36,8 @@ export interface CallChainStep {
   filePath: string;
   kind: string;
   depth: number;
+  signature?: string;
+  startLine?: number;
 }
 
 export interface CriticalityScore {
@@ -52,7 +59,9 @@ export class FlowsAnalyzer {
   /**
    * Find all entry points: functions/methods/files that have no inbound
    * `calls` edges (i.e. they are the "top" of a call chain).
-   * Limits to at most `limit` results sorted by fan-out descending.
+   * Exported functions/methods with zero callers rank first (they are the
+   * public entry surface); the remaining no-caller nodes follow. Within each
+   * group results are sorted by fan-out descending, capped at `limit`.
    */
   entryPoints(limit = 30): EntryPoint[] {
     const allFunctions = this.db.getNodesByKind(['function', 'method', 'file']);
@@ -71,10 +80,13 @@ export class FlowsAnalyzer {
         kind: node.kind,
         fanOut: outbound.length,
         fanIn: 0,
+        ...rangeFields(node),
+        ...(node.exported !== undefined ? { exported: node.exported } : {}),
       });
     }
 
-    return results.sort((a, b) => b.fanOut - a.fanOut).slice(0, limit);
+    const rank = (e: EntryPoint): number => (e.exported === true && e.kind !== 'file' ? 0 : 1);
+    return results.sort((a, b) => rank(a) - rank(b) || b.fanOut - a.fanOut).slice(0, limit);
   }
 
   /**
@@ -98,9 +110,11 @@ export class FlowsAnalyzer {
 
     for (const node of nodes) {
       if (node.isExternal) continue;
-      const fanIn = this.db.getEdgesToByKind(node.id, 'calls').length +
+      const fanIn =
+        this.db.getEdgesToByKind(node.id, 'calls').length +
         this.db.getEdgesToByKind(node.id, 'imports').length;
-      const fanOut = this.db.getEdgesFromByKind(node.id, 'calls').length +
+      const fanOut =
+        this.db.getEdgesFromByKind(node.id, 'calls').length +
         this.db.getEdgesFromByKind(node.id, 'imports').length;
 
       // Score: fan-in has higher weight (being called by many = critical)
@@ -111,7 +125,16 @@ export class FlowsAnalyzer {
       else if (score >= 15) label = 'high';
       else if (score >= 5) label = 'medium';
 
-      scores.push({ id: node.id, name: node.name, filePath: node.filePath, kind: node.kind, fanIn, fanOut, score, label });
+      scores.push({
+        id: node.id,
+        name: node.name,
+        filePath: node.filePath,
+        kind: node.kind,
+        fanIn,
+        fanOut,
+        score,
+        label,
+      });
     }
 
     return scores.sort((a, b) => b.score - a.score).slice(0, limit);
@@ -132,7 +155,15 @@ export class FlowsAnalyzer {
     const node = this.db.getNode(nodeId);
     if (!node) return;
 
-    result.push({ id: node.id, name: node.name, filePath: node.filePath, kind: node.kind, depth });
+    result.push({
+      id: node.id,
+      name: node.name,
+      filePath: node.filePath,
+      kind: node.kind,
+      depth,
+      ...(node.signature !== undefined ? { signature: node.signature } : {}),
+      ...(node.startLine !== undefined ? { startLine: node.startLine } : {}),
+    });
 
     const callEdges = this.db.getEdgesFromByKind(nodeId, 'calls');
     for (const edge of callEdges) {
@@ -152,11 +183,17 @@ export interface LargeFunction {
   fanOut: number;
   /** Estimated complexity: high fan-in + high fan-out */
   complexityScore: number;
+  /** Lines of code (endLine - startLine + 1); undefined when the node has no range */
+  loc?: number;
+  signature?: string;
+  startLine?: number;
+  endLine?: number;
 }
 
 /**
- * Find the most "complex" functions/methods in the graph based on
- * connectivity metrics (fan-in + fan-out).
+ * Find the largest functions/methods in the graph. Nodes with line ranges are
+ * ranked by LOC (ties broken by connectivity); nodes without ranges follow,
+ * ranked by connectivity (fan-in + 2 * fan-out).
  */
 export function findLargeFunctions(db: GraphDb, limit = 20): LargeFunction[] {
   const nodes = db.getNodesByKind(['function', 'method']);
@@ -167,8 +204,42 @@ export function findLargeFunctions(db: GraphDb, limit = 20): LargeFunction[] {
     const fanIn = db.getEdgesToByKind(node.id, 'calls').length;
     const fanOut = db.getEdgesFromByKind(node.id, 'calls').length;
     const complexityScore = fanIn + fanOut * 2;
-    results.push({ id: node.id, name: node.name, filePath: node.filePath, kind: node.kind, fanIn, fanOut, complexityScore });
+    const hasRange = node.startLine !== undefined && node.endLine !== undefined;
+    results.push({
+      id: node.id,
+      name: node.name,
+      filePath: node.filePath,
+      kind: node.kind,
+      fanIn,
+      fanOut,
+      complexityScore,
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
+      ...(hasRange ? { loc: node.endLine! - node.startLine! + 1 } : {}),
+      ...rangeFields(node),
+    });
   }
 
-  return results.sort((a, b) => b.complexityScore - a.complexityScore).slice(0, limit);
+  return results
+    .sort((a, b) => {
+      if (a.loc !== undefined && b.loc !== undefined) {
+        return b.loc - a.loc || b.complexityScore - a.complexityScore;
+      }
+      if (a.loc !== undefined) return -1;
+      if (b.loc !== undefined) return 1;
+      return b.complexityScore - a.complexityScore;
+    })
+    .slice(0, limit);
+}
+
+/** Optional signature/range fields, omitted when the node does not carry them. */
+function rangeFields(node: GraphNode): {
+  signature?: string;
+  startLine?: number;
+  endLine?: number;
+} {
+  return {
+    ...(node.signature !== undefined ? { signature: node.signature } : {}),
+    ...(node.startLine !== undefined ? { startLine: node.startLine } : {}),
+    ...(node.endLine !== undefined ? { endLine: node.endLine } : {}),
+  };
 }

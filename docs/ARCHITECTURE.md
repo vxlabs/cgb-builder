@@ -16,7 +16,7 @@ src/
 ├── wiki/         Markdown doc generator
 ├── registry/     Multi-repo global registry
 ├── embed/        TF-IDF cosine-similarity search
-├── mcp/          MCP server (30+ tools + 5 prompt templates)
+├── mcp/          MCP server (30 tools + 5 prompt templates)
 ├── viz/          D3 HTML graph renderer + HTTP serve
 ├── install/      Platform installer (Cursor, Claude, VS Code)
 └── eval/         Benchmark harness (5 benchmark types)
@@ -43,25 +43,38 @@ Results  ────► CLI output
 
 ## Key Design Decisions
 
-### Single-file SQLite database
+### better-sqlite3 + WAL mode
 
-All graph data lives in one `.cgb/graph.db` file inside the project root.
+All graph data lives in one `.cgb/graph.db` file inside the project root (native SQLite, no sql.js).
+WAL (write-ahead logging) enables concurrent reads while writes are in flight.
+No FK cascades, fixing stale edges during incremental updates.
 This makes the tool zero-infra — no daemon, no port, git-ignorable.
+
+### Schema v2 (FTS5 + metadata)
+
+The database stores line ranges, function signatures, docstrings, `exported` flag, and modifiers
+for all languages. FTS5 index on name + description + path enables ranked full-text search.
 
 ### Incremental re-scan
 
 `parser` tracks a content hash per file. On `cgb init` only changed files
 are re-parsed, keeping re-scans fast even for large repos.
 
-### FTS5 for search
+### Linker pass
 
-Node names and file paths are mirrored into an FTS5 virtual table.
-This gives sub-millisecond full-text search without an external index.
+After parsing, a cross-file linker resolves imports, re-exports, and scoped packages,
+then walks call chains to produce real call edges for TS/JS.
+This replaces regex-based heuristics and fixes false negatives in call graphs.
 
-### TF-IDF embeddings
+### Ranked search
 
-`embed/` computes TF-IDF vectors over node name tokens and ranks by cosine
-similarity. This provides semantic "similar code" search without an LLM call.
+Search ranks exact name, then prefix, then BM25 (FTS5).
+When embeddings exist (`cgb_embed_build`), hybrid search fuses lexical and vector ranks via RRF.
+
+### Auto-freshness
+
+Read tools (`cgb_symbol`, `cgb_search`, etc.) automatically re-parse changed files before answering.
+This keeps the graph in sync with edits without explicit `cgb update` calls (disable with `CGB_NO_AUTOREFRESH`).
 
 ### MCP-first API surface
 

@@ -11,7 +11,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 
 export class RubyAdapter implements LanguageAdapter {
@@ -19,6 +27,7 @@ export class RubyAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'ruby');
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -27,6 +36,8 @@ export class RubyAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `Ruby source file: ${path.basename(filePath)}`,
@@ -40,6 +51,25 @@ export class RubyAdapter implements LanguageAdapter {
     this.extractMethods(tree.rootNode, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'ruby', nodes, edges };
+  }
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'hash'),
+      exported: undefined,
+    };
   }
 
   private extractRequires(
@@ -108,6 +138,7 @@ export class RubyAdapter implements LanguageAdapter {
           name: className,
           filePath,
           description: `${nodeType === 'module' ? 'Module' : 'Class'} ${className}. ${snippet}`,
+          ...this.meta(node),
           isExternal: false,
           language: 'ruby',
           meta: '{}',
@@ -151,6 +182,7 @@ export class RubyAdapter implements LanguageAdapter {
           name: methodName,
           filePath,
           description: `${kind === 'method' ? 'Method' : 'Function'} ${methodName} in ${path.basename(filePath)}`,
+          ...this.meta(node),
           isExternal: false,
           language: 'ruby',
           meta: '{}',
@@ -180,6 +212,7 @@ export class RubyAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (cur.type === type) results.push(cur);
       for (const child of cur.children) stack.push(child);

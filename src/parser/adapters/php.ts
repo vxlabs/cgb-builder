@@ -11,7 +11,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 import type { NodeKind } from '../../types.js';
 
@@ -20,6 +28,7 @@ export class PhpAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'php');
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -28,6 +37,8 @@ export class PhpAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `PHP source file: ${path.basename(filePath)}`,
@@ -41,6 +52,27 @@ export class PhpAdapter implements LanguageAdapter {
     this.extractFunctions(tree.rootNode, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'php', nodes, edges };
+  }
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'slash'),
+      exported: !node.children.some(
+        (c) => c.type === 'visibility_modifier' && /private|protected/.test(c.text),
+      ),
+    };
   }
 
   private extractUses(
@@ -104,7 +136,12 @@ export class PhpAdapter implements LanguageAdapter {
         const className = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, className);
         const snippet = truncate(source.slice(node.startIndex, node.startIndex + 120));
-        const label = nodeType === 'interface_declaration' ? 'Interface' : nodeType === 'trait_declaration' ? 'Trait' : 'Class';
+        const label =
+          nodeType === 'interface_declaration'
+            ? 'Interface'
+            : nodeType === 'trait_declaration'
+              ? 'Trait'
+              : 'Class';
 
         nodes.push({
           id: nodeId,
@@ -112,6 +149,7 @@ export class PhpAdapter implements LanguageAdapter {
           name: className,
           filePath,
           description: `${label} ${className}. ${snippet}`,
+          ...this.meta(node),
           isExternal: false,
           language: 'php',
           meta: '{}',
@@ -144,7 +182,8 @@ export class PhpAdapter implements LanguageAdapter {
         if (seen.has(fnName)) continue;
         seen.add(fnName);
 
-        const insideClass = this.findAncestorOfType(node, 'class_declaration') ||
+        const insideClass =
+          this.findAncestorOfType(node, 'class_declaration') ||
           this.findAncestorOfType(node, 'trait_declaration');
         const kind = insideClass ? 'method' : 'function';
         const fnId = makeNodeId(kind, filePath, fnName);
@@ -155,6 +194,7 @@ export class PhpAdapter implements LanguageAdapter {
           name: fnName,
           filePath,
           description: `${kind === 'method' ? 'Method' : 'Function'} ${fnName} in ${path.basename(filePath)}`,
+          ...this.meta(node),
           isExternal: false,
           language: 'php',
           meta: '{}',
@@ -184,6 +224,7 @@ export class PhpAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (cur.type === type) results.push(cur);
       for (const child of cur.children) stack.push(child);

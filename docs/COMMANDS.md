@@ -153,15 +153,35 @@ Generate an interactive D3 graph visualisation.
 
 ---
 
-## `cgb install <platform>`
+## `cgb install`
 
 Configure the MCP server for AI platforms.
 
-Platforms: `cursor` | `claude` | `vscode`
+```
+cgb install --platform claude-code|claude|claude-desktop|cursor|vscode [--hook] [--claude-md] [-r root]
+```
 
 | Option | Description |
 |--------|-------------|
-| `--mcp-port <n>` | Custom MCP server port |
+| `--platform <name>` | `claude-code` writes project `.mcp.json`; `claude` is an alias of `claude-code`; `claude-desktop` writes the Desktop config |
+| `--hook` | claude-code: add a `PostToolUse` hook to `.claude/settings.json` running `cgb update --from-hook` (other platforms: add a `cgb:watch` script) |
+| `--claude-md` | claude-code: insert/replace a cgb guide block in `CLAUDE.md` between `<!-- cgb:start -->` / `<!-- cgb:end -->` |
+| `--skill` | Also write a Cursor skill snippet |
+| `--mcp-path <path>` | Explicit config file to write |
+| `-r, --root <path>` | Project root (default: cwd) |
+
+---
+
+## `cgb update [files...]`
+
+Re-parse only the given files (runs the linker). A missing file is treated as deleted.
+
+```
+cgb update [files...] [-r root] [--from-hook]
+```
+
+`--from-hook` reads Claude Code hook JSON on stdin, takes `tool_input.file_path`, updates it silently
+(files outside the root are ignored) and always exits 0.
 
 ---
 
@@ -188,5 +208,7 @@ Platforms: `cursor` | `claude` | `vscode`
 Start the MCP server (used by AI agents).
 
 ```
-cgb mcp [--port <n>]
+cgb mcp [-r, --root <path>]
 ```
+
+`--root` sets the default project root (exported as `CGB_ROOT`); otherwise `CGB_ROOT` or the cwd is used.

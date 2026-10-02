@@ -11,7 +11,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile, SupportedLanguage } from '../../types.js';
 import type { NodeKind } from '../../types.js';
 
@@ -25,6 +33,7 @@ export class CAdapter implements LanguageAdapter {
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const lang = this.language as 'c' | 'cpp';
     const tree = await treeSitterEngine.parse(source, lang);
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -33,6 +42,8 @@ export class CAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `${lang.toUpperCase()} source file: ${path.basename(filePath)}`,
@@ -48,6 +59,27 @@ export class CAdapter implements LanguageAdapter {
     return { filePath, language: lang, nodes, edges };
   }
 
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'slash'),
+      exported: !node.children.some(
+        (c) => c.type === 'storage_class_specifier' && c.text === 'static',
+      ),
+    };
+  }
+
   private extractIncludes(
     root: Parser.SyntaxNode,
     _filePath: string,
@@ -57,8 +89,7 @@ export class CAdapter implements LanguageAdapter {
   ): void {
     const seen = new Set<string>();
     for (const node of this.findByType(root, 'preproc_include')) {
-      const pathNode =
-        node.childForFieldName('path') ?? node.namedChildren[0];
+      const pathNode = node.childForFieldName('path') ?? node.namedChildren[0];
       if (!pathNode) continue;
       const rawPath = pathNode.text.replace(/^[<"']|[>"']$/g, '');
       if (!rawPath || seen.has(rawPath)) continue;
@@ -107,8 +138,11 @@ export class CAdapter implements LanguageAdapter {
       for (const node of this.findByType(root, nodeType)) {
         const nameNode = node.childForFieldName('name');
         if (!nameNode) continue;
+        // Only definitions (with a body); skip references like `struct Foo *p`.
+        if (!node.childForFieldName('body')) continue;
         const typeName = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, typeName);
+        if (nodes.some((n) => n.id === nodeId)) continue;
         const snippet = truncate(source.slice(node.startIndex, node.startIndex + 120));
         const label = nodeType === 'class_specifier' ? 'Class' : nodeType.replace('_specifier', '');
 
@@ -118,6 +152,7 @@ export class CAdapter implements LanguageAdapter {
           name: typeName,
           filePath,
           description: `${label} ${typeName}. ${snippet}`,
+          ...this.meta(node),
           isExternal: false,
           language: this.language,
           meta: '{}',
@@ -145,8 +180,13 @@ export class CAdapter implements LanguageAdapter {
     for (const node of this.findByType(root, 'function_definition')) {
       const declarator = node.childForFieldName('declarator');
       if (!declarator) continue;
-      // Walk to find the function name node
-      const nameNode = this.findByTypes(declarator, ['identifier', 'field_identifier'])[0];
+      // Walk the declarator chain (pointer_declarator -> function_declarator -> identifier)
+      let nameNode: Parser.SyntaxNode | null = declarator;
+      while (nameNode && nameNode.type !== 'identifier' && nameNode.type !== 'field_identifier') {
+        nameNode = nameNode.childForFieldName('declarator');
+      }
+      if (!nameNode)
+        nameNode = this.findByTypes(declarator, ['identifier', 'field_identifier'])[0] ?? null;
       if (!nameNode) continue;
       const fnName = nameNode.text;
       if (seen.has(fnName)) continue;
@@ -162,6 +202,7 @@ export class CAdapter implements LanguageAdapter {
         name: fnName,
         filePath,
         description: `${kind === 'method' ? 'Method' : 'Function'} ${fnName} in ${path.basename(filePath)}`,
+        ...this.meta(node),
         isExternal: false,
         language: this.language,
         meta: '{}',
@@ -194,6 +235,7 @@ export class CAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (types.includes(cur.type)) results.push(cur);
       for (const child of cur.children) stack.push(child);

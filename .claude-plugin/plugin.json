@@ -3,107 +3,45 @@
   "name": "cgb-builder",
   "display_name": "Code Graph Builder",
   "description": "Analyses TypeScript, Python, Rust, and 8 other languages to produce a queryable code graph. Provides tools for dependency analysis, impact estimation, architecture exploration, refactoring assistance, and AI context bundles.",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "author": "cgb-builder contributors",
-  "homepage": "https://github.com/your-org/code_graph_builder",
-  "logo": "https://raw.githubusercontent.com/your-org/code_graph_builder/main/assets/logo.png",
+  "homepage": "https://github.com/vxlabs/cgb-builder",
+  "logo": "https://raw.githubusercontent.com/vxlabs/cgb-builder/main/assets/logo.png",
   "categories": ["code-analysis", "refactoring", "documentation"],
   "transport": "stdio",
   "command": ["cgb", "mcp"],
-  "install_instructions": "Run `npm install -g cgb-builder` then `cgb init` in your project root to build the graph, then `cgb install claude` to register this plugin.",
+  "install_instructions": "Run `npm install -g cgb-builder` then `cgb init` in your project root to build the graph, then `cgb install --platform claude-code` to register this plugin.",
   "tools": [
-    {
-      "name": "cgb_init",
-      "description": "Scan a project directory and build (or refresh) the code graph."
-    },
-    {
-      "name": "cgb_bundle",
-      "description": "Generate an AI-optimised context bundle for a file including its dependencies."
-    },
-    {
-      "name": "cgb_deps",
-      "description": "Get all dependencies (imports) of a file."
-    },
-    {
-      "name": "cgb_impact",
-      "description": "Find files affected if a given file changes."
-    },
-    {
-      "name": "cgb_path",
-      "description": "Shortest dependency path between two files."
-    },
-    {
-      "name": "cgb_search",
-      "description": "Full-text search over node names and file paths."
-    },
-    {
-      "name": "cgb_stats",
-      "description": "Graph statistics: files, nodes, edges, cycles, orphans."
-    },
-    {
-      "name": "cgb_review_context",
-      "description": "Generate review context for a set of changed files."
-    },
-    {
-      "name": "cgb_detect_changes",
-      "description": "Detect changed files vs git HEAD and return risk scores."
-    },
-    {
-      "name": "cgb_entry_points",
-      "description": "List all entry points detected in the graph."
-    },
-    {
-      "name": "cgb_trace_flow",
-      "description": "Trace the call chain from a given entry point."
-    },
-    {
-      "name": "cgb_critical_nodes",
-      "description": "Return the highest-criticality nodes in the graph."
-    },
-    {
-      "name": "cgb_communities",
-      "description": "Detect architectural communities / clusters of files."
-    },
-    {
-      "name": "cgb_architecture_overview",
-      "description": "Single-paragraph architecture overview derived from communities."
-    },
-    {
-      "name": "cgb_large_functions",
-      "description": "Find functions/methods exceeding a configurable line threshold."
-    },
-    {
-      "name": "cgb_dead_code",
-      "description": "Find exported symbols with no internal callers."
-    },
-    {
-      "name": "cgb_refactor_suggestions",
-      "description": "Return prioritised refactoring opportunities."
-    },
-    {
-      "name": "cgb_generate_wiki",
-      "description": "Generate Markdown wiki pages from graph communities."
-    },
-    {
-      "name": "cgb_wiki_page",
-      "description": "Get a single Markdown wiki page for a file."
-    },
-    {
-      "name": "cgb_registry_list",
-      "description": "List all repos registered in the global multi-repo registry."
-    },
-    {
-      "name": "cgb_registry_search",
-      "description": "Search nodes across all registered repos."
-    },
-    {
-      "name": "cgb_embed_search",
-      "description": "Semantic similarity search using TF-IDF embeddings."
-    },
-    {
-      "name": "cgb_embed_similar",
-      "description": "Find files/nodes similar to a given file using TF-IDF embeddings."
-    }
+    {"name": "cgb_init", "description": "Scan and build (or refresh) the code graph."},
+    {"name": "cgb_deps", "description": "Get dependencies of a file (direct + transitive)."},
+    {"name": "cgb_impact", "description": "Find files affected if a given file changes."},
+    {"name": "cgb_symbol", "description": "Lookup a symbol by name or ID with callers and callees."},
+    {"name": "cgb_callers", "description": "Who calls a symbol (BFS over calls edges)."},
+    {"name": "cgb_callees", "description": "What a symbol calls (BFS over calls edges)."},
+    {"name": "cgb_search", "description": "Ranked search: exact, prefix, then full-text (BM25)."},
+    {"name": "cgb_bundle", "description": "Generate a compact AI context bundle (Markdown)."},
+    {"name": "cgb_stats", "description": "Graph statistics: files, nodes, edges, cycles, layers."},
+    {"name": "cgb_path", "description": "Shortest dependency path between two files."},
+    {"name": "cgb_detect_changes", "description": "Detect git changes with risk scoring and blast-radius."},
+    {"name": "cgb_review_context", "description": "Build a focused AI code-review context."},
+    {"name": "cgb_large_functions", "description": "Find large/complex functions ranked by connectivity."},
+    {"name": "cgb_entry_points", "description": "Discover call-chain entry points in the graph."},
+    {"name": "cgb_call_chain", "description": "Trace outgoing calls from a node."},
+    {"name": "cgb_criticality", "description": "Score nodes by criticality (fan-in, fan-out, centrality)."},
+    {"name": "cgb_communities", "description": "Detect module clusters using Louvain algorithm."},
+    {"name": "cgb_architecture", "description": "Generate high-level architecture overview."},
+    {"name": "cgb_dead_code", "description": "Find symbols with no inbound calls or imports."},
+    {"name": "cgb_rename_preview", "description": "Preview renaming a symbol."},
+    {"name": "cgb_apply_refactor", "description": "Apply a stored rename preview to disk."},
+    {"name": "cgb_refactor_suggest", "description": "Suggest structural refactoring opportunities."},
+    {"name": "cgb_wiki_generate", "description": "Generate a Markdown wiki from graph communities."},
+    {"name": "cgb_wiki_section", "description": "Generate a wiki page for one community."},
+    {"name": "cgb_registry_register", "description": "Register a project in the global registry."},
+    {"name": "cgb_registry_list", "description": "List projects in the global registry."},
+    {"name": "cgb_registry_search", "description": "Search symbols across all registered projects."},
+    {"name": "cgb_embed_build", "description": "Compute and store vector embeddings for nodes."},
+    {"name": "cgb_embed_search", "description": "Deprecated: use cgb_search. Hybrid search (BM25 + vector)."},
+    {"name": "cgb_embed_similar", "description": "Find nodes similar to a given node."}
   ],
   "prompts": [
     {

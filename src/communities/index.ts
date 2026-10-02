@@ -11,11 +11,14 @@
 
 import type { GraphDb } from '../graph/db.js';
 import type { GraphEngine } from '../graph/engine.js';
-import type { CommunityRecord } from '../types.js';
+import type { CommunityRecord, GraphNode, GraphEdge } from '../types.js';
+import { debug, warnOnce } from '../util/log.js';
 
 export type { CommunityRecord };
 
 // ─── Legacy Community type (kept for backward compat with wiki/server) ────────
+
+export type CommunityAlgorithm = 'louvain' | 'connected-components';
 
 export interface Community {
   id: string;
@@ -26,9 +29,12 @@ export interface Community {
   role: 'ui' | 'service' | 'data' | 'util' | 'config' | 'test' | 'unknown';
   cohesion?: number;
   dominantLanguage?: string | null;
+  /** Which algorithm produced this community. */
+  algorithm: CommunityAlgorithm;
 }
 
 export interface ArchitectureOverview {
+  algorithm: CommunityAlgorithm;
   totalFiles: number;
   totalNodes: number;
   communities: Community[];
@@ -70,8 +76,21 @@ export class CommunityDetector {
    * Returns communities sorted by size descending.
    */
   detectAndPersist(): CommunityRecord[] {
+    return this.detectAndPersistWithResult().records;
+  }
+
+  /** Same as detectAndPersist but also returns the detected communities (single detection pass). */
+  detectAndPersistWithResult(): { records: CommunityRecord[]; communities: Community[] } {
     const communities = this.detectSync();
     const now = Date.now();
+
+    // Load nodes once and index by file (was one getAllNodes() per community).
+    const nodesByFile = new Map<string, GraphNode[]>();
+    for (const n of this.db.getAllNodes()) {
+      const list = nodesByFile.get(n.filePath);
+      if (list) list.push(n);
+      else nodesByFile.set(n.filePath, [n]);
+    }
 
     this.db.clearCommunities();
     const inserted: CommunityRecord[] = [];
@@ -91,14 +110,14 @@ export class CommunityDetector {
       inserted.push({ ...rec, id });
 
       // Assign community_id to every node in this community's files
-      const fileSet = new Set(comm.files);
-      const nodes = this.db.getAllNodes().filter((n) => fileSet.has(n.filePath));
-      for (const node of nodes) {
-        this.db.updateNodeCommunity(node.id, id);
+      for (const fp of new Set(comm.files)) {
+        for (const node of nodesByFile.get(fp) ?? []) {
+          this.db.updateNodeCommunity(node.id, id);
+        }
       }
     }
 
-    return inserted;
+    return { records: inserted, communities };
   }
 
   /**
@@ -117,18 +136,25 @@ export class CommunityDetector {
     const communities = this.detectSync();
     const layers = this.engine.layers().slice(0, 20);
     const cycles = this.engine.detectCycles().slice(0, 5);
-    const orphans = this.engine.orphans().slice(0, 10).map((n) => n.filePath);
+    const orphans = this.engine
+      .orphans()
+      .slice(0, 10)
+      .map((n) => n.filePath);
 
     // Cross-community coupling
     const coupling = this.computeCoupling(communities);
 
     const healthNotes: string[] = [];
-    if (cycles.length > 0) healthNotes.push(`${cycles.length} circular dependency cycle(s) detected`);
-    if (orphans.length > 0) healthNotes.push(`${orphans.length} orphan file(s) with no connections`);
+    if (cycles.length > 0)
+      healthNotes.push(`${cycles.length} circular dependency cycle(s) detected`);
+    if (orphans.length > 0)
+      healthNotes.push(`${orphans.length} orphan file(s) with no connections`);
 
     const largestCommunity = communities[0];
     if (largestCommunity && largestCommunity.nodeCount > stats.files * 0.5) {
-      healthNotes.push('Over 50% of files belong to a single community — consider splitting into modules');
+      healthNotes.push(
+        'Over 50% of files belong to a single community — consider splitting into modules',
+      );
     }
 
     const heavyCoupling = coupling.filter((c) => c.edges > 10);
@@ -146,6 +172,7 @@ export class CommunityDetector {
     healthScore = Math.max(0, healthScore);
 
     return {
+      algorithm: communities[0]?.algorithm ?? this.lastAlgorithm,
       totalFiles: stats.files,
       totalNodes: stats.nodes,
       communities,
@@ -160,48 +187,68 @@ export class CommunityDetector {
 
   // ─── Private: Louvain run ─────────────────────────────────────────────────
 
+  /** Algorithm used by the most recent detection run. */
+  private lastAlgorithm: CommunityAlgorithm = 'louvain';
+
   private detectSync(): Community[] {
+    const ctx = this.loadContext();
     try {
-      return this.runLouvainSync(0, null);
-    } catch {
-      // Fallback to file-based connected components if graphology unavailable
-      return this.fallbackDetect();
+      const result = this.runLouvainSync(ctx);
+      this.lastAlgorithm = 'louvain';
+      return result;
+    } catch (err) {
+      // Fallback to file-based connected components if graphology is unavailable or fails
+      warnOnce(
+        'communities',
+        'fallback',
+        'Louvain unavailable; falling back to connected-components (import-based) communities',
+        err,
+      );
+      this.lastAlgorithm = 'connected-components';
+      return this.fallbackDetect(ctx);
     }
   }
 
-  private runLouvainSync(level: number, parentLabel: string | null): Community[] {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { default: Graph } = require('graphology') as { default: new (opts: { type: string }) => IGraph };
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { default: louvain } = require('graphology-communities-louvain') as {
-      default: (g: IGraph, opts?: { resolution?: number }) => Record<string, number>;
-    };
-
-    const allNodes = this.db.getAllNodes().filter((n) => !n.isExternal);
-    if (allNodes.length === 0) return [];
-
-    const graph: IGraph = new Graph({ type: 'undirected' });
-    for (const node of allNodes) {
-      graph.addNode(node.id, { label: node.name, filePath: node.filePath, language: node.language });
-    }
-
+  /** Load nodes/edges once and precompute degree and adjacency lookups. */
+  private loadContext(): DetectContext {
+    const allNodes = this.db.getAllNodes();
     const allEdges = this.db.getAllEdges();
-    const nodeIds = new Set(allNodes.map((n) => n.id));
-    for (const edge of allEdges) {
-      if (!nodeIds.has(edge.fromId) || !nodeIds.has(edge.toId)) continue;
-      if (edge.fromId === edge.toId) continue;
-      const weight = EDGE_WEIGHTS[edge.kind] ?? 0.3;
-      const edgeKey = `${edge.fromId}--${edge.toId}`;
-      if (!graph.hasEdge(edgeKey)) {
-        try {
-          graph.addEdgeWithKey(edgeKey, edge.fromId, edge.toId, { weight });
-        } catch {
-          // duplicate — ignore
-        }
+    const fanIn = new Map<string, number>();
+    const edgesByNode = new Map<string, GraphEdge[]>();
+    const push = (id: string, e: GraphEdge): void => {
+      const list = edgesByNode.get(id);
+      if (list) list.push(e);
+      else edgesByNode.set(id, [e]);
+    };
+    for (const e of allEdges) {
+      push(e.fromId, e);
+      if (e.toId !== e.fromId) push(e.toId, e);
+      if (e.kind === 'calls' || e.kind === 'imports') {
+        fanIn.set(e.toId, (fanIn.get(e.toId) ?? 0) + 1);
       }
     }
+    const hubNodesByFile = new Map<string, GraphNode[]>();
+    const nodesById = new Map<string, GraphNode>();
+    for (const n of allNodes) {
+      nodesById.set(n.id, n);
+      if (n.isExternal) continue;
+      if (n.kind === 'file' || n.kind === 'class' || n.kind === 'function' || n.kind === 'method') {
+        const list = hubNodesByFile.get(n.filePath);
+        if (list) list.push(n);
+        else hubNodesByFile.set(n.filePath, [n]);
+      }
+    }
+    return { allNodes, allEdges, fanIn, edgesByNode, hubNodesByFile, nodesById };
+  }
 
-    const partition = louvain(graph, { resolution: 1.0 });
+  private runLouvainSync(ctx: DetectContext): Community[] {
+    const { Graph, louvain } = loadGraphology();
+
+    const allNodes = ctx.allNodes.filter((n) => !n.isExternal);
+    if (allNodes.length === 0) return [];
+
+    const graph = buildGraph(Graph, allNodes, ctx.allEdges);
+    const partition = louvain(graph, louvainOptions());
 
     // Group nodes by community index
     const groups = new Map<number, string[]>();
@@ -217,37 +264,29 @@ export class CommunityDetector {
     for (const [, memberIds] of groups) {
       if (memberIds.length < MIN_COMMUNITY_SIZE) continue;
 
-      const memberNodes = memberIds.map((id) => this.db.getNode(id)).filter(Boolean) as ReturnType<
-        GraphDb['getNode']
-      >[];
-      const validNodes = memberNodes.filter((n): n is NonNullable<typeof n> => n !== null);
+      const validNodes = memberIds
+        .map((id) => ctx.nodesById.get(id))
+        .filter((n): n is GraphNode => n !== undefined);
 
       // Two-stage: split large communities with sub-graph Louvain
-      if (level === 0 && validNodes.length > SPLIT_THRESHOLD) {
-        const subCommunities = this.splitLargeCommunity(validNodes, communityIndex);
+      if (validNodes.length > SPLIT_THRESHOLD) {
+        const subCommunities = this.splitLargeCommunity(validNodes, communityIndex, ctx);
         communities.push(...subCommunities);
         communityIndex += subCommunities.length;
         continue;
       }
 
       const files = [...new Set(validNodes.map((n) => n.filePath))];
-      const label = parentLabel
-        ? `${parentLabel}/${this.deriveName(validNodes)}`
-        : this.deriveName(validNodes);
-      const role = this.inferRole(files);
-      const hubs = this.findHubs(validNodes.map((n) => n.filePath));
-      const cohesion = this.computeCohesion(memberIds);
-      const dominantLanguage = this.dominantLanguage(validNodes);
-
       communities.push({
         id: `community-${communityIndex++}`,
-        label,
+        label: this.deriveName(validNodes),
         files,
         nodeCount: validNodes.length,
-        hubs,
-        role,
-        cohesion,
-        dominantLanguage,
+        hubs: this.findHubs(files, ctx),
+        role: this.inferRole(files),
+        cohesion: this.computeCohesion(memberIds, ctx),
+        dominantLanguage: this.dominantLanguage(validNodes),
+        algorithm: 'louvain',
       });
     }
 
@@ -255,39 +294,34 @@ export class CommunityDetector {
   }
 
   private splitLargeCommunity(
-    nodes: NonNullable<ReturnType<GraphDb['getNode']>>[],
+    nodes: GraphNode[],
     startIdx: number,
+    ctx: DetectContext,
   ): Community[] {
+    const asWhole = (): Community[] => {
+      const files = [...new Set(nodes.map((n) => n.filePath))];
+      return [
+        {
+          id: `community-${startIdx}`,
+          label: this.deriveName(nodes),
+          files,
+          nodeCount: nodes.length,
+          hubs: this.findHubs(files, ctx),
+          role: this.inferRole(files),
+          cohesion: this.computeCohesion(
+            nodes.map((n) => n.id),
+            ctx,
+          ),
+          dominantLanguage: this.dominantLanguage(nodes),
+          algorithm: 'louvain',
+        },
+      ];
+    };
+
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { default: Graph } = require('graphology') as { default: new (opts: { type: string }) => IGraph };
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { default: louvain } = require('graphology-communities-louvain') as {
-        default: (g: IGraph, opts?: { resolution?: number }) => Record<string, number>;
-      };
-
-      const nodeSet = new Set(nodes.map((n) => n.id));
-      const subGraph: IGraph = new Graph({ type: 'undirected' });
-      for (const node of nodes) {
-        subGraph.addNode(node.id);
-      }
-
-      const allEdges = this.db.getAllEdges();
-      for (const edge of allEdges) {
-        if (!nodeSet.has(edge.fromId) || !nodeSet.has(edge.toId)) continue;
-        if (edge.fromId === edge.toId) continue;
-        const weight = EDGE_WEIGHTS[edge.kind] ?? 0.3;
-        const edgeKey = `${edge.fromId}--${edge.toId}`;
-        if (!subGraph.hasEdge(edgeKey)) {
-          try {
-            subGraph.addEdgeWithKey(edgeKey, edge.fromId, edge.toId, { weight });
-          } catch {
-            // ignore
-          }
-        }
-      }
-
-      const partition = louvain(subGraph, { resolution: 1.0 });
+      const { Graph, louvain } = loadGraphology();
+      const subGraph = buildGraph(Graph, nodes, ctx.allEdges);
+      const partition = louvain(subGraph, louvainOptions());
       const groups = new Map<number, string[]>();
       for (const [nodeId, idx] of Object.entries(partition)) {
         const list = groups.get(idx) ?? [];
@@ -301,44 +335,33 @@ export class CommunityDetector {
 
       for (const [, memberIds] of groups) {
         if (memberIds.length < MIN_COMMUNITY_SIZE) continue;
-        const memberNodes = memberIds.map((id) => this.db.getNode(id)).filter(Boolean) as NonNullable<
-          ReturnType<GraphDb['getNode']>
-        >[];
+        const memberNodes = memberIds
+          .map((id) => ctx.nodesById.get(id))
+          .filter((n): n is GraphNode => n !== undefined);
         const files = [...new Set(memberNodes.map((n) => n.filePath))];
-        const label = `${parentLabel}/${this.deriveName(memberNodes)}`;
         result.push({
           id: `community-${i++}`,
-          label,
+          label: `${parentLabel}/${this.deriveName(memberNodes)}`,
           files,
           nodeCount: memberNodes.length,
-          hubs: this.findHubs(files),
+          hubs: this.findHubs(files, ctx),
           role: this.inferRole(files),
-          cohesion: this.computeCohesion(memberIds),
+          cohesion: this.computeCohesion(memberIds, ctx),
           dominantLanguage: this.dominantLanguage(memberNodes),
+          algorithm: 'louvain',
         });
       }
-      return result.sort((a, b) => b.nodeCount - a.nodeCount);
-    } catch {
-      // Fallback: return the large community as-is
-      const files = [...new Set(nodes.map((n) => n.filePath))];
-      return [
-        {
-          id: `community-${startIdx}`,
-          label: this.deriveName(nodes),
-          files,
-          nodeCount: nodes.length,
-          hubs: this.findHubs(files),
-          role: this.inferRole(files),
-          cohesion: this.computeCohesion(nodes.map((n) => n.id)),
-          dominantLanguage: this.dominantLanguage(nodes),
-        },
-      ];
+      return result.length > 0 ? result.sort((a, b) => b.nodeCount - a.nodeCount) : asWhole();
+    } catch (err) {
+      // Return the large community as-is
+      debug('communities', 'sub-community split failed; keeping community whole', err);
+      return asWhole();
     }
   }
 
   // ─── Private: naming & metrics ────────────────────────────────────────────
 
-  private deriveName(nodes: NonNullable<ReturnType<GraphDb['getNode']>>[]): string {
+  private deriveName(nodes: GraphNode[]): string {
     if (nodes.length === 0) return 'cluster';
 
     // 1. Common directory prefix
@@ -386,14 +409,13 @@ export class CommunityDetector {
     return prefix;
   }
 
-  private computeCohesion(nodeIds: string[]): number {
+  private computeCohesion(nodeIds: string[], ctx: DetectContext): number {
     if (nodeIds.length < 2) return 1;
     const idSet = new Set(nodeIds);
     let internal = 0;
     let external = 0;
     for (const nodeId of nodeIds) {
-      const edges = [...this.db.getEdgesFrom(nodeId), ...this.db.getEdgesTo(nodeId)];
-      for (const edge of edges) {
+      for (const edge of ctx.edgesByNode.get(nodeId) ?? []) {
         const other = edge.fromId === nodeId ? edge.toId : edge.fromId;
         if (idSet.has(other)) internal++;
         else external++;
@@ -403,9 +425,7 @@ export class CommunityDetector {
     return internal + external === 0 ? 1 : internal / (internal + external);
   }
 
-  private dominantLanguage(
-    nodes: NonNullable<ReturnType<GraphDb['getNode']>>[],
-  ): string | null {
+  private dominantLanguage(nodes: GraphNode[]): string | null {
     const freq = new Map<string, number>();
     for (const n of nodes) {
       if (n.language) freq.set(n.language, (freq.get(n.language) ?? 0) + 1);
@@ -425,47 +445,55 @@ export class CommunityDetector {
     return 'unknown';
   }
 
-  private findHubs(files: string[]): Community['hubs'] {
-    const fileSet = new Set(files);
-    const nodes = this.db.getNodesByKind(['file', 'class', 'function', 'method']);
+  private findHubs(files: string[], ctx: DetectContext): Community['hubs'] {
     const hubs: Community['hubs'] = [];
-    for (const node of nodes) {
-      if (!fileSet.has(node.filePath) || node.isExternal) continue;
-      const fanIn =
-        this.db.getEdgesToByKind(node.id, 'calls').length +
-        this.db.getEdgesToByKind(node.id, 'imports').length;
-      if (fanIn > 0) hubs.push({ name: node.name, filePath: node.filePath, fanIn });
+    for (const fp of new Set(files)) {
+      for (const node of ctx.hubNodesByFile.get(fp) ?? []) {
+        const fanIn = ctx.fanIn.get(node.id) ?? 0;
+        if (fanIn > 0) hubs.push({ name: node.name, filePath: node.filePath, fanIn });
+      }
     }
     return hubs.sort((a, b) => b.fanIn - a.fanIn).slice(0, 5);
   }
 
-  private computeCoupling(communities: Community[]): Array<{ from: string; to: string; edges: number }> {
-    const nodeToComm = new Map<string, string>();
-    for (const comm of communities) {
-      const nodes = this.db.getAllNodes().filter((n) => comm.files.includes(n.filePath));
-      for (const n of nodes) nodeToComm.set(n.id, comm.label);
+  private computeCoupling(
+    communities: Community[],
+  ): Array<{ from: string; to: string; edges: number }> {
+    // Build file -> community index once, then nodeId -> community via the node's file.
+    const fileToComm = new Map<string, number>();
+    communities.forEach((comm, idx) => {
+      for (const fp of comm.files) fileToComm.set(fp, idx);
+    });
+    const nodeToComm = new Map<string, number>();
+    for (const n of this.db.getAllNodes()) {
+      const idx = fileToComm.get(n.filePath);
+      if (idx !== undefined) nodeToComm.set(n.id, idx);
     }
 
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { a: number; b: number; edges: number }>();
     for (const edge of this.db.getAllEdges()) {
       const fromComm = nodeToComm.get(edge.fromId);
       const toComm = nodeToComm.get(edge.toId);
-      if (!fromComm || !toComm || fromComm === toComm) continue;
-      const key = [fromComm, toComm].sort().join('|||');
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (fromComm === undefined || toComm === undefined || fromComm === toComm) continue;
+      const a = Math.min(fromComm, toComm);
+      const b = Math.max(fromComm, toComm);
+      const key = `${a}|${b}`;
+      const entry = counts.get(key);
+      if (entry) entry.edges++;
+      else counts.set(key, { a, b, edges: 1 });
     }
 
-    return [...counts.entries()]
-      .map(([key, edges]) => {
-        const [from, to] = key.split('|||');
+    return [...counts.values()]
+      .map(({ a, b, edges }) => {
+        const [from, to] = [communities[a].label, communities[b].label].sort();
         return { from, to, edges };
       })
-      .sort((a, b) => b.edges - a.edges);
+      .sort((x, y) => y.edges - x.edges);
   }
 
   // ─── Fallback: Union-Find (when graphology unavailable) ───────────────────
 
-  private fallbackDetect(): Community[] {
+  private fallbackDetect(ctx: DetectContext): Community[] {
     const files = this.db.getAllFiles().map((f) => f.filePath);
     if (files.length === 0) return [];
 
@@ -477,7 +505,9 @@ export class CommunityDetector {
       if (p !== x) parent.set(x, find(p));
       return parent.get(x) ?? x;
     };
-    const union = (a: string, b: string): void => { parent.set(find(a), find(b)); };
+    const union = (a: string, b: string): void => {
+      parent.set(find(a), find(b));
+    };
 
     const fileNodes = this.db.getNodesByKind(['file']);
     for (const node of fileNodes) {
@@ -505,8 +535,9 @@ export class CommunityDetector {
         label: this.communityLabelFromFiles(members),
         files: members,
         nodeCount: members.length,
-        hubs: this.findHubs(members),
+        hubs: this.findHubs(members, ctx),
         role: this.inferRole(members),
+        algorithm: 'connected-components',
       });
     }
     return communities.sort((a, b) => b.nodeCount - a.nodeCount);
@@ -529,10 +560,83 @@ export class CommunityDetector {
   }
 }
 
-// ─── Minimal graphology interface (avoid full type dep at runtime) ─────────────
+// ─── Graphology loading & graph construction ──────────────────────────────────
+
+interface DetectContext {
+  allNodes: GraphNode[];
+  allEdges: GraphEdge[];
+  nodesById: Map<string, GraphNode>;
+  /** calls + imports edges pointing at each node. */
+  fanIn: Map<string, number>;
+  edgesByNode: Map<string, GraphEdge[]>;
+  hubNodesByFile: Map<string, GraphNode[]>;
+}
 
 interface IGraph {
   addNode(key: string, attrs?: Record<string, unknown>): void;
-  addEdgeWithKey(key: string, from: string, to: string, attrs?: Record<string, unknown>): void;
-  hasEdge(key: string): boolean;
+  hasNode(key: string): boolean;
+  hasEdge(source: string, target: string): boolean;
+  addEdge(source: string, target: string, attrs?: Record<string, unknown>): void;
+  getEdgeAttribute(source: string, target: string, name: string): unknown;
+  setEdgeAttribute(source: string, target: string, name: string, value: unknown): void;
+}
+
+type GraphCtor = new (opts: { type: string }) => IGraph;
+type LouvainFn = (g: IGraph, opts?: Record<string, unknown>) => Record<string, number>;
+
+/** Tolerant CJS/ESM interop: under CommonJS these packages export the constructor/function directly. */
+function pick<T>(mod: unknown, named?: string): T {
+  const m = mod as Record<string, unknown> | null | undefined;
+  const candidate = (m && (m.default ?? (named ? m[named] : undefined))) ?? m;
+  return candidate as T;
+}
+
+function loadGraphology(): { Graph: GraphCtor; louvain: LouvainFn } {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- untyped third-party/dynamic value; behaviour unchanged
+  const Graph = pick<GraphCtor>(require('graphology'), 'Graph');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- untyped third-party/dynamic value; behaviour unchanged
+  const louvain = pick<LouvainFn>(require('graphology-communities-louvain'));
+  if (typeof Graph !== 'function') throw new Error('graphology did not export a Graph constructor');
+  if (typeof louvain !== 'function')
+    throw new Error('graphology-communities-louvain did not export a function');
+  return { Graph, louvain };
+}
+
+/** Small seeded PRNG (mulberry32) so Louvain results are deterministic. */
+function seededRng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function louvainOptions(): Record<string, unknown> {
+  return { resolution: 1, getEdgeWeight: 'weight', randomWalk: false, rng: seededRng(0xc0ffee) };
+}
+
+/**
+ * Build an undirected weighted graph. Parallel edges between the same pair
+ * (any direction, any kind) are merged by summing their weights.
+ */
+function buildGraph(Graph: GraphCtor, nodes: GraphNode[], edges: GraphEdge[]): IGraph {
+  const graph = new Graph({ type: 'undirected' });
+  for (const node of nodes) graph.addNode(node.id);
+  for (const edge of edges) {
+    if (edge.fromId === edge.toId) continue;
+    if (!graph.hasNode(edge.fromId) || !graph.hasNode(edge.toId)) continue;
+    const weight = EDGE_WEIGHTS[edge.kind] ?? 0.3;
+    if (graph.hasEdge(edge.fromId, edge.toId)) {
+      const prev = graph.getEdgeAttribute(edge.fromId, edge.toId, 'weight') as number;
+      graph.setEdgeAttribute(edge.fromId, edge.toId, 'weight', prev + weight);
+    } else {
+      graph.addEdge(edge.fromId, edge.toId, { weight });
+    }
+  }
+  return graph;
 }

@@ -14,7 +14,16 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import { debug } from '../../util/log.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 
 // ─── CSharpAdapter ────────────────────────────────────────────────────────────
@@ -24,6 +33,7 @@ export class CSharpAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'csharp');
+    this.src = source;
     const langObj = await treeSitterEngine.loadLanguage('csharp');
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
@@ -34,6 +44,8 @@ export class CSharpAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `C# source file: ${path.basename(filePath)}`,
@@ -61,6 +73,25 @@ export class CSharpAdapter implements LanguageAdapter {
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'slash'),
+      exported: node.children.some((c) => c.type === 'modifier' && c.text === 'public'),
+    };
+  }
 
   private extractUsings(
     tree: Parser.Tree,
@@ -106,8 +137,8 @@ export class CSharpAdapter implements LanguageAdapter {
           reason: `using ${nameText}`,
         });
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -137,6 +168,7 @@ export class CSharpAdapter implements LanguageAdapter {
           name: nsName,
           filePath,
           description: `Namespace ${nsName}`,
+          ...this.meta(nsNode),
           isExternal: false,
           language: 'csharp',
           meta: '{}',
@@ -150,8 +182,8 @@ export class CSharpAdapter implements LanguageAdapter {
           reason: `declares namespace ${nsName}`,
         });
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -183,6 +215,7 @@ export class CSharpAdapter implements LanguageAdapter {
           name: className,
           filePath,
           description: `Class ${className}. ${snippet}`,
+          ...this.meta(classNode),
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ isRecord: classNode.type === 'record_declaration' }),
@@ -217,8 +250,8 @@ export class CSharpAdapter implements LanguageAdapter {
         // Extract methods inside this class
         this.extractClassMethods(classNode, filePath, classId, className, nodes, edges);
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -255,6 +288,7 @@ export class CSharpAdapter implements LanguageAdapter {
           name: methodName,
           filePath,
           description: `${className}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
+          ...this.meta(methodNode),
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ returnType, className }),
@@ -272,8 +306,8 @@ export class CSharpAdapter implements LanguageAdapter {
         // Extract calls from this method body
         this.extractCalls(methodNode, filePath, methodId, nodes, edges);
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -348,8 +382,8 @@ export class CSharpAdapter implements LanguageAdapter {
           }
         }
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -395,7 +429,8 @@ export class CSharpAdapter implements LanguageAdapter {
         }
       }
       return truncate(params.join(', '), 80);
-    } catch {
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
       return '';
     }
   }
@@ -422,6 +457,7 @@ export class CSharpAdapter implements LanguageAdapter {
           name: ifaceName,
           filePath,
           description: `Interface ${ifaceName}`,
+          ...this.meta(ifaceNode),
           isExternal: false,
           language: 'csharp',
           meta: '{}',
@@ -470,6 +506,7 @@ export class CSharpAdapter implements LanguageAdapter {
             name: methodName,
             filePath,
             description: `${ifaceName}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
+            ...this.meta(methodNode),
             isExternal: false,
             language: 'csharp',
             meta: JSON.stringify({ returnType, interfaceName: ifaceName }),
@@ -484,8 +521,8 @@ export class CSharpAdapter implements LanguageAdapter {
           });
         }
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -525,6 +562,7 @@ export class CSharpAdapter implements LanguageAdapter {
           name: methodName,
           filePath,
           description: `Top-level function ${methodName}: ${returnType}`,
+          ...this.meta(methodNode),
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ returnType }),
@@ -538,8 +576,8 @@ export class CSharpAdapter implements LanguageAdapter {
           reason: `file defines function ${methodName}`,
         });
       }
-    } catch {
-      // Gracefully skip
+    } catch (err) {
+      debug('parser', 'csharp extraction step failed', err);
     }
   }
 
@@ -548,6 +586,7 @@ export class CSharpAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const current = stack.pop()!;
       if (current.type === type) {
         results.push(current);

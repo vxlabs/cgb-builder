@@ -64,10 +64,30 @@ cgb registry search "UserService"     # search across all registered repos
 
 ## MCP Integration
 
+### Claude Code quick start
+
 ```bash
-cgb install cursor     # auto-configure Cursor
-cgb install claude     # auto-configure Claude Code
-cgb install vscode     # generate VS Code settings
+cgb init                                              # build the graph
+cgb install --platform claude-code --hook --claude-md # one command
+```
+
+This writes:
+
+- `.mcp.json` with the `cgb` server (merged, never clobbering other servers; idempotent).
+  Equivalent: `claude mcp add cgb --scope project -- npx -y cgb-builder mcp --root <abs path>`.
+- `--hook` (optional): a `PostToolUse` hook in `.claude/settings.json` that runs
+  `npx -y cgb-builder update --from-hook` after Edit/Write/MultiEdit, keeping the graph fresh.
+  It is silent and always exits 0, so it never blocks an edit.
+- `--claude-md` (optional): a short usage guide in `CLAUDE.md` between `<!-- cgb:start -->` and
+  `<!-- cgb:end -->` markers. Re-running replaces only that block.
+
+`--platform claude` is an alias for `claude-code`. For Claude Desktop use `--platform claude-desktop`.
+
+### Other editors
+
+```bash
+cgb install --platform cursor     # auto-configure Cursor
+cgb install --platform vscode     # generate VS Code settings
 ```
 
 Once installed, AI agents can call 30+ tools including `cgb_deps`, `cgb_impact`,

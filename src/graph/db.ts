@@ -1,29 +1,52 @@
 /**
- * SQLite-backed graph database using sql.js (pure WASM, no native compilation).
- * Stores nodes, edges, and file metadata. Persists to a binary .db file on disk.
+ * SQLite-backed graph database using better-sqlite3 (native, on-disk, WAL).
+ * Stores nodes, edges, and file metadata in <root>/.cgb/graph.db.
+ *
+ * Design notes:
+ *  - Edges have NO foreign keys / cascades. Re-parsing a file removes that file's
+ *    nodes and OUTGOING edges only; incoming edges survive (node IDs are stable).
+ *    `deleteDanglingEdges()` prunes edges whose endpoints no longer exist.
+ *  - The DB is derived data: on SCHEMA_VERSION mismatch all tables are dropped
+ *    and recreated.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
-import type { GraphEdge, GraphNode, FileRecord, EmbeddingRecord, CommunityRecord } from '../types.js';
+import Database from 'better-sqlite3';
+import type {
+  GraphEdge,
+  GraphNode,
+  FileRecord,
+  EmbeddingRecord,
+  CommunityRecord,
+} from '../types.js';
+import type { NodeKind } from '../types.js';
+import { warnOnce, debug } from '../util/log.js';
+import { splitIdentifier } from '../parser/utils.js';
+
+/** Stored in PRAGMA user_version. Bump to force a drop-and-recreate. */
+export const SCHEMA_VERSION = 2;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
 const SCHEMA_CORE = `
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-
 CREATE TABLE IF NOT EXISTS nodes (
-  id          TEXT PRIMARY KEY,
-  kind        TEXT NOT NULL,
-  name        TEXT NOT NULL,
-  file_path   TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  is_external INTEGER NOT NULL DEFAULT 0,
-  language    TEXT,
-  meta        TEXT NOT NULL DEFAULT '{}',
-  updated_at  INTEGER NOT NULL
+  id           TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  file_path    TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  is_external  INTEGER NOT NULL DEFAULT 0,
+  language     TEXT,
+  meta         TEXT NOT NULL DEFAULT '{}',
+  updated_at   INTEGER NOT NULL,
+  community_id INTEGER,
+  start_line   INTEGER,
+  end_line     INTEGER,
+  signature    TEXT,
+  doc          TEXT,
+  exported     INTEGER,
+  modifiers    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -32,9 +55,7 @@ CREATE TABLE IF NOT EXISTS edges (
   to_id       TEXT NOT NULL,
   kind        TEXT NOT NULL,
   reason      TEXT NOT NULL DEFAULT '',
-  updated_at  INTEGER NOT NULL,
-  FOREIGN KEY (from_id) REFERENCES nodes(id) ON DELETE CASCADE,
-  FOREIGN KEY (to_id)   REFERENCES nodes(id) ON DELETE CASCADE
+  updated_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS files (
@@ -66,51 +87,82 @@ CREATE TABLE IF NOT EXISTS communities (
   created_at        INTEGER NOT NULL
 );
 
--- Indexes for common query patterns
 CREATE INDEX IF NOT EXISTS idx_nodes_file_path  ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind       ON nodes(kind);
+CREATE INDEX IF NOT EXISTS idx_nodes_name       ON nodes(name);
+CREATE INDEX IF NOT EXISTS idx_nodes_community  ON nodes(community_id);
 CREATE INDEX IF NOT EXISTS idx_edges_from_id    ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to_id      ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_kind       ON edges(kind);
-`;
 
-// FTS5 is only available when SQLite is compiled with it (e.g. native binaries).
-// The sql.js WASM build does not include FTS5, so we apply this schema
-// opportunistically and fall back gracefully when it is absent.
-const SCHEMA_FTS = `
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
-  id        UNINDEXED,
-  name,
-  description,
-  file_path,
-  content='nodes',
-  content_rowid='rowid'
+  node_id UNINDEXED, name, name_tokens, signature, doc, path_tokens,
+  tokenize = 'unicode61 remove_diacritics 2'
 );
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_ai AFTER INSERT ON nodes BEGIN
-  INSERT INTO nodes_fts(rowid, id, name, description, file_path)
-  VALUES (new.rowid, new.id, new.name, new.description, new.file_path);
-END;
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE ON nodes BEGIN
-  INSERT INTO nodes_fts(nodes_fts, rowid, id, name, description, file_path)
-  VALUES ('delete', old.rowid, old.id, old.name, old.description, old.file_path);
-  INSERT INTO nodes_fts(rowid, id, name, description, file_path)
-  VALUES (new.rowid, new.id, new.name, new.description, new.file_path);
-END;
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_ad AFTER DELETE ON nodes BEGIN
-  INSERT INTO nodes_fts(nodes_fts, rowid, id, name, description, file_path)
-  VALUES ('delete', old.rowid, old.id, old.name, old.description, old.file_path);
-END;
 `;
+
+const IN_CHUNK = 500;
+
+export interface SearchOptions {
+  /** Default 30, max 500. */
+  limit?: number;
+  kinds?: NodeKind[];
+  /** Default false. */
+  includeExternal?: boolean;
+}
+
+const KIND_PRIORITY = [
+  'class',
+  'interface',
+  'function',
+  'method',
+  'type',
+  'module',
+  'file',
+  'external_dep',
+];
+
+type Row = Record<string, unknown>;
+
+/** Last 4 path segments, split on / \ . _ - (the DB does not know the repo root). */
+function pathTokens(filePath: string): string {
+  return filePath
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .slice(-4)
+    .join(' ')
+    .split(/[._\-\s]+/)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => '\\' + c);
+}
+
+function optionalNodeFields(obj: Row): Partial<GraphNode> {
+  const out: Partial<GraphNode> = {};
+  if (obj['start_line'] != null) out.startLine = obj['start_line'] as number;
+  if (obj['end_line'] != null) out.endLine = obj['end_line'] as number;
+  if (obj['signature'] != null) out.signature = obj['signature'] as string;
+  if (obj['doc'] != null) out.doc = obj['doc'] as string;
+  if (obj['exported'] != null) out.exported = (obj['exported'] as number) === 1;
+  if (obj['modifiers'] != null) {
+    try {
+      out.modifiers = JSON.parse(obj['modifiers'] as string) as string[];
+    } catch (err) {
+      debug('db', 'bad modifiers JSON', err);
+    }
+  }
+  return out;
+}
 
 // ─── GraphDb class ────────────────────────────────────────────────────────────
 
 export class GraphDb {
-  private db!: Database;
+  private db!: Database.Database;
   private dbPath: string;
-  private static sqlJs: SqlJsStatic | null = null;
+  private stmts = new Map<string, Database.Statement>();
 
   constructor(projectRoot: string) {
     const cgbDir = path.join(projectRoot, '.cgb');
@@ -120,49 +172,73 @@ export class GraphDb {
     this.dbPath = path.join(cgbDir, 'graph.db');
   }
 
-  /** Initialize the database (async because sql.js WASM loading is async) */
+  /** Open the database, set pragmas, and ensure the schema is current. */
+  // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
   async init(): Promise<void> {
-    if (!GraphDb.sqlJs) {
-      const wasmPath = require.resolve('sql.js/dist/sql-wasm.wasm');
-      GraphDb.sqlJs = await initSqlJs({ locateFile: () => wasmPath });
-    }
+    if (this.db && this.db.open) return;
+    this.stmts.clear();
+    this.db = new Database(this.dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('foreign_keys = OFF');
+    this.db.pragma('busy_timeout = 5000');
 
-    if (fs.existsSync(this.dbPath)) {
-      const fileBuffer = fs.readFileSync(this.dbPath);
-      this.db = new GraphDb.sqlJs.Database(fileBuffer);
+    const version = this.db.pragma('user_version', { simple: true }) as number;
+    if (version !== SCHEMA_VERSION) {
+      const hasTables = (
+        this.db.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type = 'table'").get() as Row
+      )['c'] as number;
+      if (hasTables > 0) {
+        warnOnce(
+          'db',
+          'schema-reset',
+          `graph.db schema version ${version} != ${SCHEMA_VERSION}; rebuilding (run init to re-index)`,
+        );
+        this.dropAll();
+      }
+      this.db.exec(SCHEMA_CORE);
+      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     } else {
-      this.db = new GraphDb.sqlJs.Database();
+      this.db.exec(SCHEMA_CORE);
     }
-
-    this.db.run(SCHEMA_CORE);
-
-    // FTS5 is optional — only available in SQLite builds that include it.
-    // sql.js (WASM) does not ship FTS5, so we apply it opportunistically.
-    try {
-      this.db.run(SCHEMA_FTS);
-    } catch {
-      // FTS5 unavailable; searchNodes() and searchNodesRanked() fall back to LIKE
-    }
-
-    // Idempotent migration: add community_id column to nodes if not present
-    try {
-      this.db.run('ALTER TABLE nodes ADD COLUMN community_id INTEGER');
-    } catch {
-      // Column already exists — ignore
-    }
-
-    this.persist();
+    debug('db', `opened ${this.dbPath}`);
   }
 
-  /** Save the in-memory DB back to disk */
+  private dropAll(): void {
+    const tables = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+      .all() as Row[];
+    this.stmts.clear();
+    this.db.transaction(() => {
+      for (const t of tables) this.db.exec(`DROP TABLE IF EXISTS "${t['name'] as string}"`);
+    })();
+  }
+
+  private stmt(sql: string): Database.Statement {
+    let s = this.stmts.get(sql);
+    if (!s) {
+      s = this.db.prepare(sql);
+      this.stmts.set(sql, s);
+    }
+    return s;
+  }
+
+  /** @deprecated No-op; writes go straight to disk. Kept so callers compile. */
   persist(): void {
-    const data = this.db.export();
-    fs.writeFileSync(this.dbPath, Buffer.from(data));
+    /* no-op */
   }
 
+  /** Close the handle. Idempotent. */
   close(): void {
-    this.persist();
-    this.db.close();
+    if (this.db && this.db.open) {
+      this.stmts.clear();
+      this.db.close();
+    }
+  }
+
+  /** Run fn inside a transaction (rolls back if it throws). */
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
   }
 
   /** Returns the .cgb/ directory that contains the database file. */
@@ -173,9 +249,10 @@ export class GraphDb {
   // ─── Node Operations ───────────────────────────────────────────────────────
 
   upsertNode(node: GraphNode): void {
-    this.db.run(
-      `INSERT INTO nodes (id, kind, name, file_path, description, is_external, language, meta, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.stmt(
+      `INSERT INTO nodes (id, kind, name, file_path, description, is_external, language, meta, updated_at,
+                          start_line, end_line, signature, doc, exported, modifiers)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          kind        = excluded.kind,
          name        = excluded.name,
@@ -184,142 +261,206 @@ export class GraphDb {
          is_external = excluded.is_external,
          language    = excluded.language,
          meta        = excluded.meta,
-         updated_at  = excluded.updated_at`,
-      [
-        node.id,
-        node.kind,
-        node.name,
-        node.filePath,
-        node.description,
-        node.isExternal ? 1 : 0,
-        node.language ?? null,
-        node.meta,
-        node.updatedAt,
-      ],
+         updated_at  = excluded.updated_at,
+         start_line  = excluded.start_line,
+         end_line    = excluded.end_line,
+         signature   = excluded.signature,
+         doc         = excluded.doc,
+         exported    = excluded.exported,
+         modifiers   = excluded.modifiers`,
+    ).run(
+      node.id,
+      node.kind,
+      node.name,
+      node.filePath,
+      node.description,
+      node.isExternal ? 1 : 0,
+      node.language ?? null,
+      node.meta,
+      node.updatedAt,
+      node.startLine ?? null,
+      node.endLine ?? null,
+      node.signature ?? null,
+      node.doc ?? null,
+      node.exported === undefined ? null : node.exported ? 1 : 0,
+      node.modifiers && node.modifiers.length > 0 ? JSON.stringify(node.modifiers) : null,
+    );
+    const rowid = (this.stmt('SELECT rowid AS r FROM nodes WHERE id = ?').get(node.id) as Row)[
+      'r'
+    ] as number;
+    this.writeFtsRow(rowid, node);
+  }
+
+  /** Replace the FTS row for a node (FTS rowid == nodes.rowid). */
+  private writeFtsRow(
+    rowid: number,
+    n: Pick<GraphNode, 'id' | 'name' | 'filePath' | 'signature' | 'doc'>,
+  ): void {
+    this.stmt('DELETE FROM nodes_fts WHERE rowid = ?').run(rowid);
+    this.stmt(
+      `INSERT INTO nodes_fts (rowid, node_id, name, name_tokens, signature, doc, path_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      rowid,
+      n.id,
+      n.name,
+      splitIdentifier(n.name),
+      n.signature ?? '',
+      n.doc ?? '',
+      pathTokens(n.filePath),
     );
   }
 
   getNode(id: string): GraphNode | null {
-    const rows = this.db.exec('SELECT * FROM nodes WHERE id = ?', [id]);
-    if (!rows.length || !rows[0].values.length) return null;
-    return this.rowToNode(rows[0].columns, rows[0].values[0]);
+    const row = this.stmt('SELECT * FROM nodes WHERE id = ?').get(id) as Row | undefined;
+    return row ? this.rowToNode(row) : null;
   }
 
   getNodesByFile(filePath: string): GraphNode[] {
-    const rows = this.db.exec('SELECT * FROM nodes WHERE file_path = ?', [filePath]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM nodes WHERE file_path = ?').all(filePath) as Row[]).map((r) =>
+      this.rowToNode(r),
+    );
   }
 
-  searchNodes(query: string): GraphNode[] {
-    // Attempt FTS5 full-text search first; fall back to LIKE on error
-    try {
-      // Escape FTS5 special chars in the query and wrap for prefix matching
-      const ftsQuery = query.replace(/["*^()]/g, ' ').trim() + '*';
-      const rows = this.db.exec(
-        `SELECT n.* FROM nodes n
-         JOIN nodes_fts ON n.rowid = nodes_fts.rowid
-         WHERE nodes_fts MATCH ?
-         ORDER BY nodes_fts.rank
-         LIMIT 100`,
-        [ftsQuery],
-      );
-      if (rows.length) {
-        return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
-      }
-      return [];
-    } catch {
-      // Fallback: LIKE search when FTS5 is unavailable or query is malformed
-      const like = `%${query}%`;
-      const rows = this.db.exec(
-        'SELECT * FROM nodes WHERE name LIKE ? OR description LIKE ? OR file_path LIKE ? LIMIT 100',
-        [like, like, like],
-      );
-      if (!rows.length) return [];
-      return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
+  /** Fetch nodes by ID (chunked IN lists). Order is not guaranteed. */
+  getNodesByIds(ids: string[]): GraphNode[] {
+    const out: GraphNode[] = [];
+    for (let i = 0; i < ids.length; i += IN_CHUNK) {
+      const chunk = ids.slice(i, i + IN_CHUNK);
+      const ph = chunk.map(() => '?').join(', ');
+      const rows = this.stmt(`SELECT * FROM nodes WHERE id IN (${ph})`).all(...chunk) as Row[];
+      for (const r of rows) out.push(this.rowToNode(r));
     }
+    return out;
   }
 
-  /** Rebuild FTS5 index from scratch (useful after bulk imports or migrations) */
+  /** Exact, case-sensitive name lookup, optionally restricted to kinds. */
+  getNodesByName(name: string, kinds?: NodeKind[]): GraphNode[] {
+    let rows: Row[];
+    if (kinds && kinds.length > 0) {
+      const ph = kinds.map(() => '?').join(', ');
+      rows = this.stmt(`SELECT * FROM nodes WHERE name = ? AND kind IN (${ph})`).all(
+        name,
+        ...kinds,
+      ) as Row[];
+    } else {
+      rows = this.stmt('SELECT * FROM nodes WHERE name = ?').all(name) as Row[];
+    }
+    return rows.map((r) => this.rowToNode(r));
+  }
+
+  /** Ranked search (exact name > prefix > FTS5 BM25), deduped. See searchNodesRanked. */
+  searchNodes(query: string, opts?: number | SearchOptions): GraphNode[] {
+    const ranked = this.searchNodesRanked(query, opts);
+    if (ranked.length === 0) return [];
+    const byId = new Map(this.getNodesByIds(ranked.map((r) => r.id)).map((n) => [n.id, n]));
+    const out: GraphNode[] = [];
+    for (const r of ranked) {
+      const n = byId.get(r.id);
+      if (n) out.push(n);
+    }
+    return out;
+  }
+
+  /** Repopulate nodes_fts from nodes (external nodes included). */
   rebuildFts(): void {
-    try {
-      this.db.run(`INSERT INTO nodes_fts(nodes_fts) VALUES ('rebuild')`);
-    } catch {
-      // FTS5 may not be available in all builds; silently continue
-    }
+    this.transaction(() => {
+      this.stmt('DELETE FROM nodes_fts').run();
+      const rows = this.stmt(
+        'SELECT rowid AS r, id, name, file_path, signature, doc FROM nodes',
+      ).all() as Row[];
+      for (const r of rows) {
+        this.writeFtsRow(r['r'] as number, {
+          id: r['id'] as string,
+          name: r['name'] as string,
+          filePath: r['file_path'] as string,
+          signature: (r['signature'] as string | null) ?? undefined,
+          doc: (r['doc'] as string | null) ?? undefined,
+        });
+      }
+    });
   }
 
   getNodesByKind(kinds: string[]): GraphNode[] {
     if (kinds.length === 0) return [];
     const placeholders = kinds.map(() => '?').join(', ');
-    const rows = this.db.exec(
-      `SELECT * FROM nodes WHERE kind IN (${placeholders}) ORDER BY name`,
-      kinds,
-    );
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
+    return (
+      this.stmt(`SELECT * FROM nodes WHERE kind IN (${placeholders}) ORDER BY name`).all(
+        ...kinds,
+      ) as Row[]
+    ).map((r) => this.rowToNode(r));
   }
 
   getAllNodes(): GraphNode[] {
-    const rows = this.db.exec('SELECT * FROM nodes ORDER BY name');
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM nodes ORDER BY name').all() as Row[]).map((r) =>
+      this.rowToNode(r),
+    );
   }
 
   deleteNodesByFile(filePath: string): void {
-    this.db.run('DELETE FROM nodes WHERE file_path = ?', [filePath]);
+    this.stmt(
+      'DELETE FROM nodes_fts WHERE rowid IN (SELECT rowid FROM nodes WHERE file_path = ?)',
+    ).run(filePath);
+    this.stmt('DELETE FROM nodes WHERE file_path = ?').run(filePath);
   }
 
   // ─── Edge Operations ───────────────────────────────────────────────────────
 
   upsertEdge(edge: GraphEdge): void {
-    this.db.run(
+    this.stmt(
       `INSERT INTO edges (id, from_id, to_id, kind, reason, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          reason     = excluded.reason,
          updated_at = excluded.updated_at`,
-      [edge.id, edge.fromId, edge.toId, edge.kind, edge.reason, edge.updatedAt],
-    );
+    ).run(edge.id, edge.fromId, edge.toId, edge.kind, edge.reason, edge.updatedAt);
   }
 
   getEdgesFrom(nodeId: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE from_id = ?', [nodeId]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM edges WHERE from_id = ?').all(nodeId) as Row[]).map((r) =>
+      this.rowToEdge(r),
+    );
   }
 
   getEdgesTo(nodeId: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE to_id = ?', [nodeId]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM edges WHERE to_id = ?').all(nodeId) as Row[]).map((r) =>
+      this.rowToEdge(r),
+    );
   }
 
   getEdgesFromByKind(nodeId: string, kind: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE from_id = ? AND kind = ?', [nodeId, kind]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
+    return (
+      this.stmt('SELECT * FROM edges WHERE from_id = ? AND kind = ?').all(nodeId, kind) as Row[]
+    ).map((r) => this.rowToEdge(r));
   }
 
   getEdgesToByKind(nodeId: string, kind: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE to_id = ? AND kind = ?', [nodeId, kind]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
+    return (
+      this.stmt('SELECT * FROM edges WHERE to_id = ? AND kind = ?').all(nodeId, kind) as Row[]
+    ).map((r) => this.rowToEdge(r));
   }
 
+  /** Delete OUTGOING edges of every node in filePath. Incoming edges are kept. */
   deleteEdgesByFile(filePath: string): void {
-    // Edges are cascade-deleted when nodes are deleted, but we also remove
-    // outgoing edges from this file's nodes
-    const nodes = this.getNodesByFile(filePath);
-    for (const node of nodes) {
-      this.db.run('DELETE FROM edges WHERE from_id = ?', [node.id]);
-    }
+    this.stmt('DELETE FROM edges WHERE from_id IN (SELECT id FROM nodes WHERE file_path = ?)').run(
+      filePath,
+    );
+  }
+
+  /** Delete edges whose from_id or to_id has no node. Returns the number removed. */
+  deleteDanglingEdges(): number {
+    const res = this.stmt(
+      `DELETE FROM edges
+       WHERE NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.id = edges.from_id)
+          OR NOT EXISTS (SELECT 1 FROM nodes WHERE nodes.id = edges.to_id)`,
+    ).run();
+    return res.changes;
   }
 
   // ─── File Operations ───────────────────────────────────────────────────────
 
   upsertFile(record: FileRecord): void {
-    this.db.run(
+    this.stmt(
       `INSERT INTO files (file_path, language, content_hash, mtime, node_count, edge_count, parsed_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(file_path) DO UPDATE SET
@@ -329,175 +470,268 @@ export class GraphDb {
          node_count   = excluded.node_count,
          edge_count   = excluded.edge_count,
          parsed_at    = excluded.parsed_at`,
-      [
-        record.filePath,
-        record.language,
-        record.contentHash,
-        record.mtime,
-        record.nodeCount,
-        record.edgeCount,
-        record.parsedAt,
-      ],
+    ).run(
+      record.filePath,
+      record.language,
+      record.contentHash,
+      record.mtime,
+      record.nodeCount,
+      record.edgeCount,
+      record.parsedAt,
     );
   }
 
   getFile(filePath: string): FileRecord | null {
-    const rows = this.db.exec('SELECT * FROM files WHERE file_path = ?', [filePath]);
-    if (!rows.length || !rows[0].values.length) return null;
-    return this.rowToFile(rows[0].columns, rows[0].values[0]);
+    const row = this.stmt('SELECT * FROM files WHERE file_path = ?').get(filePath) as
+      | Row
+      | undefined;
+    return row ? this.rowToFile(row) : null;
   }
 
   getAllFiles(): FileRecord[] {
-    const rows = this.db.exec('SELECT * FROM files ORDER BY file_path');
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToFile(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM files ORDER BY file_path').all() as Row[]).map((r) =>
+      this.rowToFile(r),
+    );
   }
 
   deleteFile(filePath: string): void {
     this.deleteEdgesByFile(filePath);
     this.deleteNodesByFile(filePath);
-    this.db.run('DELETE FROM files WHERE file_path = ?', [filePath]);
+    this.stmt('DELETE FROM files WHERE file_path = ?').run(filePath);
   }
 
   // ─── Stats ─────────────────────────────────────────────────────────────────
 
   getStats(): { nodes: number; edges: number; files: number } {
-    const nodeCount = this.db.exec('SELECT COUNT(*) FROM nodes')[0]?.values[0][0] as number;
-    const edgeCount = this.db.exec('SELECT COUNT(*) FROM edges')[0]?.values[0][0] as number;
-    const fileCount = this.db.exec('SELECT COUNT(*) FROM files')[0]?.values[0][0] as number;
-    return { nodes: nodeCount ?? 0, edges: edgeCount ?? 0, files: fileCount ?? 0 };
+    const n = this.stmt('SELECT COUNT(*) AS c FROM nodes').get() as Row;
+    const e = this.stmt('SELECT COUNT(*) AS c FROM edges').get() as Row;
+    const f = this.stmt('SELECT COUNT(*) AS c FROM files').get() as Row;
+    return {
+      nodes: (n['c'] as number) ?? 0,
+      edges: (e['c'] as number) ?? 0,
+      files: (f['c'] as number) ?? 0,
+    };
   }
 
   getNodeCountByKind(): Record<string, number> {
-    const rows = this.db.exec('SELECT kind, COUNT(*) as cnt FROM nodes GROUP BY kind');
-    if (!rows.length) return {};
-    return Object.fromEntries(rows[0].values.map(([kind, cnt]) => [kind as string, cnt as number]));
+    const rows = this.stmt('SELECT kind, COUNT(*) AS cnt FROM nodes GROUP BY kind').all() as Row[];
+    return Object.fromEntries(rows.map((r) => [r['kind'] as string, r['cnt'] as number]));
   }
 
   getEdgeCountByKind(): Record<string, number> {
-    const rows = this.db.exec('SELECT kind, COUNT(*) as cnt FROM edges GROUP BY kind');
-    if (!rows.length) return {};
-    return Object.fromEntries(rows[0].values.map(([kind, cnt]) => [kind as string, cnt as number]));
+    const rows = this.stmt('SELECT kind, COUNT(*) AS cnt FROM edges GROUP BY kind').all() as Row[];
+    return Object.fromEntries(rows.map((r) => [r['kind'] as string, r['cnt'] as number]));
   }
 
   // ─── All Edges (for traversal) ────────────────────────────────────────────
 
   getAllEdges(): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges');
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM edges').all() as Row[]).map((r) => this.rowToEdge(r));
   }
 
-  // ─── BM25 Ranked Search ────────────────────────────────────────────────────
+  // ─── Ranked Search ─────────────────────────────────────────────────────────
 
-  /** FTS5 BM25-ranked search. Returns {id, score}[] with best matches first. */
-  searchNodesRanked(query: string, limit = 50): Array<{ id: string; score: number }> {
-    try {
-      const ftsQuery = query.replace(/["*^()]/g, ' ').trim() + '*';
-      const rows = this.db.exec(
-        `SELECT n.id, nodes_fts.rank as score
-         FROM nodes n
-         JOIN nodes_fts ON n.rowid = nodes_fts.rowid
-         WHERE nodes_fts MATCH ?
-         ORDER BY nodes_fts.rank
-         LIMIT ?`,
-        [ftsQuery, limit],
-      );
-      if (!rows.length) return [];
-      return rows[0].values.map(([id, score]) => ({
-        id: id as string,
-        score: -(score as number), // FTS5 rank is negative; flip so higher = better
-      }));
-    } catch {
-      return [];
+  /**
+   * Ranked search. Stages: exact name (1000), name prefix (500 - extra length),
+   * FTS5 BM25 over token columns (100 / (1 + position)). Merged by id (best score),
+   * ties broken by kind priority then shorter name. Externals excluded by default.
+   */
+  searchNodesRanked(
+    query: string,
+    opts?: number | SearchOptions,
+  ): Array<{ id: string; score: number; matchedBy: 'exact' | 'prefix' | 'fts' }> {
+    const o: SearchOptions = typeof opts === 'number' ? { limit: opts } : (opts ?? {});
+    const limit = Math.max(1, Math.min(Math.floor(o.limit ?? 30), 500));
+    const q = query.trim();
+    if (!q) return [];
+
+    let filter = '';
+    const fparams: unknown[] = [];
+    if (!o.includeExternal) filter += ' AND n.is_external = 0';
+    if (o.kinds && o.kinds.length > 0) {
+      filter += ` AND n.kind IN (${o.kinds.map(() => '?').join(', ')})`;
+      fparams.push(...o.kinds);
     }
+
+    type Hit = {
+      id: string;
+      name: string;
+      kind: string;
+      score: number;
+      matchedBy: 'exact' | 'prefix' | 'fts';
+    };
+    const best = new Map<string, Hit>();
+    const add = (r: Row, score: number, matchedBy: Hit['matchedBy']): void => {
+      const id = r['id'] as string;
+      const prev = best.get(id);
+      if (!prev || prev.score < score) {
+        best.set(id, {
+          id,
+          name: r['name'] as string,
+          kind: r['kind'] as string,
+          score,
+          matchedBy,
+        });
+      }
+    };
+    const run = (sql: string, ...params: unknown[]): Row[] => {
+      try {
+        return this.stmt(sql).all(...params) as Row[];
+      } catch (err) {
+        debug('search', 'query failed', err);
+        return [];
+      }
+    };
+
+    const esc = escapeLike(q);
+    // 1. exact (also the last segment of Class.method names)
+    for (const r of run(
+      `SELECT n.id, n.name, n.kind FROM nodes n
+       WHERE (n.name = ? COLLATE NOCASE OR n.name LIKE ? ESCAPE '\\')${filter} LIMIT ?`,
+      q,
+      `%.${esc}`,
+      ...fparams,
+      limit,
+    )) {
+      add(r, 1000, 'exact');
+    }
+    // 2. prefix
+    for (const r of run(
+      `SELECT n.id, n.name, n.kind FROM nodes n
+       WHERE n.name LIKE ? ESCAPE '\\'${filter} ORDER BY length(n.name) LIMIT ?`,
+      `${esc}%`,
+      ...fparams,
+      limit,
+    )) {
+      add(r, 500 - Math.min(Math.max((r['name'] as string).length - q.length, 0), 400), 'prefix');
+    }
+    // 3. FTS5 BM25 (AND of prefix tokens, then OR)
+    const tokens = splitIdentifier(q.replace(/["*:()^-]/g, ' '))
+      .split(' ')
+      .filter(Boolean)
+      .slice(0, 12);
+    if (tokens.length > 0) {
+      const quoted = tokens.map((t) => `"${t}"*`);
+      const ftsSql = `SELECT n.id, n.name, n.kind FROM nodes_fts
+         JOIN nodes n ON n.rowid = nodes_fts.rowid
+         WHERE nodes_fts MATCH ?${filter}
+         ORDER BY bm25(nodes_fts, 0, 10, 5, 2, 1, 1) LIMIT ?`;
+      let rows = run(ftsSql, quoted.join(' '), ...fparams, limit);
+      if (rows.length === 0 && quoted.length > 1) {
+        rows = run(ftsSql, quoted.join(' OR '), ...fparams, limit);
+      }
+      rows.forEach((r, i) => add(r, 100 / (1 + i), 'fts'));
+    }
+    // 4. last resort: substring match on name (covers punctuation-only queries like "%")
+    if (best.size === 0) {
+      for (const r of run(
+        `SELECT n.id, n.name, n.kind FROM nodes n
+         WHERE n.name LIKE ? ESCAPE '\\'${filter} ORDER BY length(n.name) LIMIT ?`,
+        `%${esc}%`,
+        ...fparams,
+        limit,
+      )) {
+        add(r, 10, 'fts');
+      }
+    }
+
+    const prio = (k: string): number => {
+      const i = KIND_PRIORITY.indexOf(k);
+      return i < 0 ? KIND_PRIORITY.length : i;
+    };
+    return [...best.values()]
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          prio(a.kind) - prio(b.kind) ||
+          a.name.length - b.name.length ||
+          (a.id < b.id ? -1 : 1),
+      )
+      .slice(0, limit)
+      .map(({ id, score, matchedBy }) => ({ id, score, matchedBy }));
   }
 
   // ─── Embedding Operations ──────────────────────────────────────────────────
 
   upsertEmbedding(record: EmbeddingRecord): void {
-    this.db.run(
+    this.stmt(
       `INSERT INTO embeddings (node_id, vector, text_hash, provider)
        VALUES (?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          vector    = excluded.vector,
          text_hash = excluded.text_hash,
          provider  = excluded.provider`,
-      [record.nodeId, record.vector, record.textHash, record.provider],
-    );
+    ).run(record.nodeId, Buffer.from(record.vector), record.textHash, record.provider);
   }
 
   getEmbedding(nodeId: string): EmbeddingRecord | null {
-    const rows = this.db.exec('SELECT * FROM embeddings WHERE node_id = ?', [nodeId]);
-    if (!rows.length || !rows[0].values.length) return null;
-    return this.rowToEmbedding(rows[0].columns, rows[0].values[0]);
+    const row = this.stmt('SELECT * FROM embeddings WHERE node_id = ?').get(nodeId) as
+      | Row
+      | undefined;
+    return row ? this.rowToEmbedding(row) : null;
   }
 
   getAllEmbeddings(): EmbeddingRecord[] {
-    const rows = this.db.exec('SELECT * FROM embeddings');
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToEmbedding(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM embeddings').all() as Row[]).map((r) =>
+      this.rowToEmbedding(r),
+    );
   }
 
   deleteEmbedding(nodeId: string): void {
-    this.db.run('DELETE FROM embeddings WHERE node_id = ?', [nodeId]);
+    this.stmt('DELETE FROM embeddings WHERE node_id = ?').run(nodeId);
   }
 
   getEmbeddingCount(): number {
-    const rows = this.db.exec('SELECT COUNT(*) FROM embeddings');
-    return (rows[0]?.values[0][0] as number) ?? 0;
+    return ((this.stmt('SELECT COUNT(*) AS c FROM embeddings').get() as Row)['c'] as number) ?? 0;
   }
 
   // ─── Community Operations ──────────────────────────────────────────────────
 
   upsertCommunity(community: Omit<CommunityRecord, 'id'>): number {
-    this.db.run(
+    const res = this.stmt(
       `INSERT INTO communities (name, level, parent_id, cohesion, size, dominant_language, description, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        community.name,
-        community.level,
-        community.parentId ?? null,
-        community.cohesion,
-        community.size,
-        community.dominantLanguage ?? null,
-        community.description,
-        community.createdAt,
-      ],
+    ).run(
+      community.name,
+      community.level,
+      community.parentId ?? null,
+      community.cohesion,
+      community.size,
+      community.dominantLanguage ?? null,
+      community.description,
+      community.createdAt,
     );
-    const rows = this.db.exec('SELECT last_insert_rowid()');
-    return (rows[0]?.values[0][0] as number) ?? 0;
+    return Number(res.lastInsertRowid);
   }
 
   clearCommunities(): void {
-    this.db.run('DELETE FROM communities');
-    this.db.run('UPDATE nodes SET community_id = NULL');
+    this.stmt('DELETE FROM communities').run();
+    this.stmt('UPDATE nodes SET community_id = NULL').run();
   }
 
   updateNodeCommunity(nodeId: string, communityId: number | null): void {
-    this.db.run('UPDATE nodes SET community_id = ? WHERE id = ?', [communityId, nodeId]);
+    this.stmt('UPDATE nodes SET community_id = ? WHERE id = ?').run(communityId, nodeId);
   }
 
   getCommunities(level?: number): CommunityRecord[] {
     const rows =
       level !== undefined
-        ? this.db.exec('SELECT * FROM communities WHERE level = ? ORDER BY size DESC', [level])
-        : this.db.exec('SELECT * FROM communities ORDER BY level ASC, size DESC');
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToCommunity(rows[0].columns, row));
+        ? (this.stmt('SELECT * FROM communities WHERE level = ? ORDER BY size DESC').all(
+            level,
+          ) as Row[])
+        : (this.stmt('SELECT * FROM communities ORDER BY level ASC, size DESC').all() as Row[]);
+    return rows.map((r) => this.rowToCommunity(r));
   }
 
   getCommunityMembers(communityId: number): GraphNode[] {
-    const rows = this.db.exec('SELECT * FROM nodes WHERE community_id = ?', [communityId]);
-    if (!rows.length) return [];
-    return rows[0].values.map((row) => this.rowToNode(rows[0].columns, row));
+    return (this.stmt('SELECT * FROM nodes WHERE community_id = ?').all(communityId) as Row[]).map(
+      (r) => this.rowToNode(r),
+    );
   }
 
   // ─── Row Mappers ───────────────────────────────────────────────────────────
 
-  private rowToNode(columns: string[], row: (number | string | Uint8Array | null)[]): GraphNode {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((col, i) => (obj[col] = row[i]));
+  private rowToNode(obj: Row): GraphNode {
     return {
       id: obj['id'] as string,
       kind: obj['kind'] as GraphNode['kind'],
@@ -508,12 +742,11 @@ export class GraphDb {
       language: (obj['language'] as GraphNode['language']) ?? null,
       meta: (obj['meta'] as string) ?? '{}',
       updatedAt: obj['updated_at'] as number,
+      ...optionalNodeFields(obj),
     };
   }
 
-  private rowToEdge(columns: string[], row: (number | string | Uint8Array | null)[]): GraphEdge {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((col, i) => (obj[col] = row[i]));
+  private rowToEdge(obj: Row): GraphEdge {
     return {
       id: obj['id'] as string,
       fromId: obj['from_id'] as string,
@@ -524,26 +757,18 @@ export class GraphDb {
     };
   }
 
-  private rowToEmbedding(
-    columns: string[],
-    row: (number | string | Uint8Array | null)[],
-  ): EmbeddingRecord {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((col, i) => (obj[col] = row[i]));
+  private rowToEmbedding(obj: Row): EmbeddingRecord {
+    const v = obj['vector'] as Buffer;
     return {
       nodeId: obj['node_id'] as string,
-      vector: obj['vector'] as Uint8Array,
+      // Copy into a standalone Uint8Array (Buffer may be a view into a shared pool)
+      vector: new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength)),
       textHash: obj['text_hash'] as string,
       provider: obj['provider'] as string,
     };
   }
 
-  private rowToCommunity(
-    columns: string[],
-    row: (number | string | Uint8Array | null)[],
-  ): CommunityRecord {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((col, i) => (obj[col] = row[i]));
+  private rowToCommunity(obj: Row): CommunityRecord {
     return {
       id: obj['id'] as number,
       name: obj['name'] as string,
@@ -557,9 +782,7 @@ export class GraphDb {
     };
   }
 
-  private rowToFile(columns: string[], row: (number | string | Uint8Array | null)[]): FileRecord {
-    const obj: Record<string, unknown> = {};
-    columns.forEach((col, i) => (obj[col] = row[i]));
+  private rowToFile(obj: Row): FileRecord {
     return {
       filePath: obj['file_path'] as string,
       language: obj['language'] as FileRecord['language'],

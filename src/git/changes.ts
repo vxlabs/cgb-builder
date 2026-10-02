@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import type { GraphDb } from '../graph/db.js';
+import type { GraphNode } from '../types.js';
 import type { GraphEngine } from '../graph/engine.js';
 import type { GitChange } from './diff.js';
 import { scoreFile, overallRisk, isTestFile, type FileRisk } from './risk.js';
@@ -40,18 +41,63 @@ export interface ChangeAnalysis {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * Multi-source reverse BFS over imports/exports edges.
+ * Seeds all `seedIds` at depth 0 and returns every dependent node exactly once,
+ * at its minimum depth from any seed (seeds themselves are not in the result).
+ * Level-batched: one `getNodesByIds` call per BFS level.
+ */
+export function multiSourceImpact(
+  db: GraphDb,
+  seedIds: string[],
+  maxDepth = 10,
+  maxNodes = 5000,
+): Map<string, { node: GraphNode; depth: number }> {
+  const result = new Map<string, { node: GraphNode; depth: number }>();
+  const seen = new Set<string>(seedIds);
+  let frontier = Array.from(seen);
+
+  for (let depth = 0; frontier.length && depth < maxDepth; depth++) {
+    const candidates: string[] = [];
+    for (const id of frontier) {
+      const incoming = [
+        ...db.getEdgesToByKind(id, 'imports'),
+        ...db.getEdgesToByKind(id, 'exports'),
+      ];
+      for (const edge of incoming) {
+        if (seen.has(edge.fromId)) continue;
+        seen.add(edge.fromId);
+        candidates.push(edge.fromId);
+      }
+    }
+    if (!candidates.length) break;
+
+    const byId = new Map(db.getNodesByIds(candidates).map((n) => [n.id, n] as const));
+    const next: string[] = [];
+    for (const id of candidates) {
+      const node = byId.get(id);
+      if (!node) continue;
+      if (result.size >= maxNodes) return result;
+      result.set(id, { node, depth: depth + 1 });
+      next.push(id);
+    }
+    frontier = next;
+  }
+  return result;
+}
+
+/**
  * Analyse a set of git changes against the code graph.
  *
  * For each changed file this function:
  * 1. Retrieves graph nodes defined in that file
- * 2. Computes blast radius via `engine.impact()`
+ * 2. Computes blast radius via a multi-source BFS (`multiSourceImpact`)
  * 3. Checks whether any test file imports the changed nodes
  * 4. Scores the file using the risk model
  */
 export function analyzeChanges(
   gitChanges: GitChange[],
   db: GraphDb,
-  engine: GraphEngine,
+  _engine?: GraphEngine,
 ): ChangeAnalysis {
   const summary = {
     added: 0,
@@ -70,33 +116,25 @@ export function analyzeChanges(
     summary.totalChangedLines += change.linesAdded + change.linesRemoved;
 
     // ── Blast radius ─────────────────────────────────────────────────────────
+    // One multi-source BFS seeded with every node of the file.
     const fileNodes = db.getNodesByFile(change.filePath);
+    const reached = multiSourceImpact(
+      db,
+      fileNodes.map((n) => n.id),
+    );
     const blastFileSet = new Set<string>();
-
-    for (const node of fileNodes) {
-      const impact = engine.impact(node.id);
-      if (impact) {
-        for (const entry of impact.affected) {
-          if (entry.node.filePath !== change.filePath) {
-            blastFileSet.add(entry.node.filePath);
-          }
-        }
-      }
+    for (const { node } of reached.values()) {
+      if (node.filePath !== change.filePath) blastFileSet.add(node.filePath);
     }
 
     const blastRadius = blastFileSet.size;
 
     // ── Test coverage detection ────────────────────────────────────────────
     let hasTests = false;
-    outer: for (const node of fileNodes) {
-      const incomingEdges = db.getEdgesTo(node.id);
-      for (const edge of incomingEdges) {
-        const callerNode = db.getNode(edge.fromId);
-        if (callerNode && isTestFile(callerNode.filePath)) {
-          hasTests = true;
-          break outer;
-        }
-      }
+    const incomingEdges = fileNodes.flatMap((node) => db.getEdgesTo(node.id));
+    if (incomingEdges.length) {
+      const callers = db.getNodesByIds(Array.from(new Set(incomingEdges.map((e) => e.fromId))));
+      hasTests = callers.some((n) => isTestFile(n.filePath));
     }
 
     // ── Read file content for keyword scanning (best-effort) ───────────────
@@ -126,7 +164,7 @@ export function analyzeChanges(
   }
 
   // Sort by risk descending so callers can take the top N easily
-  details.sort((a, b) => b.riskScore - a.riskScore);
+  details.sort((a, b) => b.riskScore - a.riskScore || a.file.filePath.localeCompare(b.file.filePath));
 
   return {
     summary,

@@ -11,7 +11,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 import type { NodeKind } from '../../types.js';
 
@@ -20,6 +28,7 @@ export class KotlinAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'kotlin');
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -28,6 +37,8 @@ export class KotlinAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `Kotlin source file: ${path.basename(filePath)}`,
@@ -41,6 +52,27 @@ export class KotlinAdapter implements LanguageAdapter {
     this.extractFunctions(tree.rootNode, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'kotlin', nodes, edges };
+  }
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'slash'),
+      exported: !node.children.some(
+        (c) => c.type === 'modifiers' && /(private|protected|internal)/.test(c.text),
+      ),
+    };
   }
 
   private extractImports(
@@ -98,10 +130,12 @@ export class KotlinAdapter implements LanguageAdapter {
       ['interface_declaration', 'interface', 'Interface'],
     ];
 
-    for (const [nodeType, kind, label] of typeMap) {
+    for (const [nodeType, baseKind, baseLabel] of typeMap) {
       for (const node of this.findByType(root, nodeType)) {
-        const nameNode = node.childForFieldName('name') ??
-          this.findByType(node, 'simple_identifier')[0];
+        const isIface = node.children.some((c) => c.type === 'interface');
+        const kind: NodeKind = isIface ? 'interface' : baseKind;
+        const label = isIface ? 'Interface' : baseLabel;
+        const nameNode = this.declName(node);
         if (!nameNode) continue;
         const className = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, className);
@@ -113,6 +147,7 @@ export class KotlinAdapter implements LanguageAdapter {
           name: className,
           filePath,
           description: `${label} ${className}. ${snippet}`,
+          ...this.meta(node),
           isExternal: false,
           language: 'kotlin',
           meta: '{}',
@@ -138,8 +173,7 @@ export class KotlinAdapter implements LanguageAdapter {
   ): void {
     const seen = new Set<string>();
     for (const node of this.findByType(root, 'function_declaration')) {
-      const nameNode = node.childForFieldName('name') ??
-        this.findByType(node, 'simple_identifier')[0];
+      const nameNode = this.declName(node);
       if (!nameNode) continue;
       const fnName = nameNode.text;
       if (seen.has(fnName)) continue;
@@ -159,6 +193,7 @@ export class KotlinAdapter implements LanguageAdapter {
         name: fnName,
         filePath,
         description: `${kind === 'method' ? 'Method' : 'Function'} ${fnName} in ${path.basename(filePath)}`,
+        ...this.meta(node),
         isExternal: false,
         language: 'kotlin',
         meta: '{}',
@@ -174,6 +209,15 @@ export class KotlinAdapter implements LanguageAdapter {
     }
   }
 
+  /** Declaration name: the first direct identifier child (grammar has no `name` field). */
+  private declName(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+    return (
+      node.childForFieldName('name') ??
+      node.children.find((c) => c.type === 'simple_identifier' || c.type === 'type_identifier') ??
+      null
+    );
+  }
+
   private findAncestorOfTypes(node: Parser.SyntaxNode, types: string[]): Parser.SyntaxNode | null {
     let cur: Parser.SyntaxNode | null = node.parent;
     while (cur) {
@@ -187,6 +231,7 @@ export class KotlinAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (cur.type === type) results.push(cur);
       for (const child of cur.children) stack.push(child);

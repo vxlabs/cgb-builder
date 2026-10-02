@@ -1,7 +1,7 @@
 /**
  * Unit tests for GraphEngine — graph traversal logic.
  *
- * Uses a real GraphDb (in-memory sql.js) populated with a small fixture graph:
+ * Uses a real GraphDb (temp-dir better-sqlite3) populated with a small fixture graph:
  *
  *   FileA --imports--> FileB --imports--> FileC --imports--> ExtLodash
  *   FileA --imports--> FileC
@@ -46,22 +46,97 @@ const CX = 'class:/root/a.ts#X';
 const CY = 'class:/root/b.ts#Y';
 
 const FIXTURE_NODES: GraphNode[] = [
-  node({ id: FA,  kind: 'file',         name: 'a.ts',   filePath: '/root/a.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: FB,  kind: 'file',         name: 'b.ts',   filePath: '/root/b.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: FC,  kind: 'file',         name: 'c.ts',   filePath: '/root/c.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: FD,  kind: 'file',         name: 'd.ts',   filePath: '/root/d.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: EXT, kind: 'external_dep', name: 'lodash', filePath: 'lodash',     description: '', isExternal: true,  language: null,         meta: '{}' }),
-  node({ id: CX,  kind: 'class',        name: 'X',      filePath: '/root/a.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
-  node({ id: CY,  kind: 'class',        name: 'Y',      filePath: '/root/b.ts', description: '', isExternal: false, language: 'typescript', meta: '{}' }),
+  node({
+    id: FA,
+    kind: 'file',
+    name: 'a.ts',
+    filePath: '/root/a.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: FB,
+    kind: 'file',
+    name: 'b.ts',
+    filePath: '/root/b.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: FC,
+    kind: 'file',
+    name: 'c.ts',
+    filePath: '/root/c.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: FD,
+    kind: 'file',
+    name: 'd.ts',
+    filePath: '/root/d.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: EXT,
+    kind: 'external_dep',
+    name: 'lodash',
+    filePath: 'lodash',
+    description: '',
+    isExternal: true,
+    language: null,
+    meta: '{}',
+  }),
+  node({
+    id: CX,
+    kind: 'class',
+    name: 'X',
+    filePath: '/root/a.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
+  node({
+    id: CY,
+    kind: 'class',
+    name: 'Y',
+    filePath: '/root/b.ts',
+    description: '',
+    isExternal: false,
+    language: 'typescript',
+    meta: '{}',
+  }),
 ];
 
 const FIXTURE_EDGES: GraphEdge[] = [
-  edge({ id: `${FA}|imports|${FB}`, fromId: FA,  toId: FB,  kind: 'imports',  reason: 'imports b' }),
-  edge({ id: `${FA}|imports|${FC}`, fromId: FA,  toId: FC,  kind: 'imports',  reason: 'imports c' }),
-  edge({ id: `${FB}|imports|${FC}`, fromId: FB,  toId: FC,  kind: 'imports',  reason: 'imports c' }),
-  edge({ id: `${FC}|imports|${EXT}`,fromId: FC,  toId: EXT, kind: 'imports',  reason: 'imports lodash' }),
-  edge({ id: `${FA}|exports|${CX}`, fromId: FA,  toId: CX,  kind: 'exports',  reason: 'defines class X' }),
-  edge({ id: `${CX}|inherits|${CY}`,fromId: CX,  toId: CY,  kind: 'inherits', reason: 'extends Y' }),
+  edge({ id: `${FA}|imports|${FB}`, fromId: FA, toId: FB, kind: 'imports', reason: 'imports b' }),
+  edge({ id: `${FA}|imports|${FC}`, fromId: FA, toId: FC, kind: 'imports', reason: 'imports c' }),
+  edge({ id: `${FB}|imports|${FC}`, fromId: FB, toId: FC, kind: 'imports', reason: 'imports c' }),
+  edge({
+    id: `${FC}|imports|${EXT}`,
+    fromId: FC,
+    toId: EXT,
+    kind: 'imports',
+    reason: 'imports lodash',
+  }),
+  edge({
+    id: `${FA}|exports|${CX}`,
+    fromId: FA,
+    toId: CX,
+    kind: 'exports',
+    reason: 'defines class X',
+  }),
+  edge({ id: `${CX}|inherits|${CY}`, fromId: CX, toId: CY, kind: 'inherits', reason: 'extends Y' }),
 ];
 
 // ─── setup ────────────────────────────────────────────────────────────────────
@@ -102,15 +177,15 @@ describe('GraphEngine', () => {
     it('returns direct imports of FileA', () => {
       const result = engine.deps(FA, 1);
       expect(result).not.toBeNull();
-      expect(result!.direct.map(n => n.id)).toContain(FB);
-      expect(result!.direct.map(n => n.id)).toContain(FC);
+      expect(result!.direct.map((n) => n.id)).toContain(FB);
+      expect(result!.direct.map((n) => n.id)).toContain(FC);
     });
 
     it('returns transitive deps at depth 2', () => {
       const result = engine.deps(FA, 2);
       expect(result).not.toBeNull();
       // FA → FB → FC → EXT should all be reachable
-      const allIds = [...result!.direct, ...result!.transitive].map(n => n.id);
+      const allIds = [...result!.direct, ...result!.transitive].map((n) => n.id);
       expect(allIds).toContain(FC);
       expect(allIds).toContain(EXT);
     });
@@ -131,7 +206,7 @@ describe('GraphEngine', () => {
     it('FileC impacts FileA and FileB (they import it)', () => {
       const result = engine.impact(FC);
       expect(result).not.toBeNull();
-      const affectedIds = result!.affected.map(a => a.node.id);
+      const affectedIds = result!.affected.map((a) => a.node.id);
       expect(affectedIds).toContain(FA);
       expect(affectedIds).toContain(FB);
     });
@@ -139,7 +214,7 @@ describe('GraphEngine', () => {
     it('FileB impacts FileA', () => {
       const result = engine.impact(FB);
       expect(result).not.toBeNull();
-      const affectedIds = result!.affected.map(a => a.node.id);
+      const affectedIds = result!.affected.map((a) => a.node.id);
       expect(affectedIds).toContain(FA);
     });
 
@@ -151,7 +226,7 @@ describe('GraphEngine', () => {
 
     it('returns depth information', () => {
       const result = engine.impact(FC);
-      const faEntry = result!.affected.find(a => a.node.id === FA);
+      const faEntry = result!.affected.find((a) => a.node.id === FA);
       expect(faEntry).toBeDefined();
       expect(faEntry!.depth).toBeGreaterThan(0);
     });
@@ -189,13 +264,13 @@ describe('GraphEngine', () => {
   describe('search()', () => {
     it('finds nodes by name', () => {
       const results = engine.search('b.ts');
-      expect(results.some(n => n.id === FB)).toBe(true);
+      expect(results.some((n) => n.id === FB)).toBe(true);
     });
 
     it('finds nodes by class name', () => {
       // Our fixture node name is 'X', description is empty — try searching 'X'
       const byName = engine.search('X');
-      expect(byName.some(n => n.id === CX)).toBe(true);
+      expect(byName.some((n) => n.id === CX)).toBe(true);
     });
 
     it('returns empty array for no match', () => {
@@ -213,13 +288,15 @@ describe('GraphEngine', () => {
 
     it('detects a cycle when one is introduced', async () => {
       // Add a back-edge: FC → FA (creates cycle FA → FC → FA indirectly)
-      db.upsertEdge(edge({
-        id: `${FC}|imports|${FA}`,
-        fromId: FC,
-        toId: FA,
-        kind: 'imports',
-        reason: 'cycle edge',
-      }));
+      db.upsertEdge(
+        edge({
+          id: `${FC}|imports|${FA}`,
+          fromId: FC,
+          toId: FA,
+          kind: 'imports',
+          reason: 'cycle edge',
+        }),
+      );
       const cycles = engine.detectCycles();
       expect(cycles.length).toBeGreaterThan(0);
     });
@@ -230,14 +307,14 @@ describe('GraphEngine', () => {
   describe('orphans()', () => {
     it('identifies FileD as an orphan', () => {
       const orphans = engine.orphans();
-      expect(orphans.some(n => n.id === FD)).toBe(true);
+      expect(orphans.some((n) => n.id === FD)).toBe(true);
     });
 
     it('does not mark connected files as orphans', () => {
       const orphans = engine.orphans();
-      expect(orphans.some(n => n.id === FA)).toBe(false);
-      expect(orphans.some(n => n.id === FB)).toBe(false);
-      expect(orphans.some(n => n.id === FC)).toBe(false);
+      expect(orphans.some((n) => n.id === FA)).toBe(false);
+      expect(orphans.some((n) => n.id === FB)).toBe(false);
+      expect(orphans.some((n) => n.id === FC)).toBe(false);
     });
   });
 
@@ -246,9 +323,47 @@ describe('GraphEngine', () => {
   describe('findByFile()', () => {
     it('returns all nodes for the given file', () => {
       const nodes = engine.findByFile('/root/a.ts');
-      const ids = nodes.map(n => n.id);
+      const ids = nodes.map((n) => n.id);
       expect(ids).toContain(FA);
       expect(ids).toContain(CX);
+    });
+  });
+
+  // ── maxNodes cap / layers ─────────────────────────────────────────────────
+
+  describe('traversal caps', () => {
+    it('impact() does not set truncated when under the cap', () => {
+      const result = engine.impact(FC)!;
+      expect(result.truncated).toBeUndefined();
+      expect(result.affected.length).toBeGreaterThan(1);
+    });
+
+    it('impact() sets truncated when maxNodes is hit', () => {
+      const result = engine.impact(FC, 10, 1)!;
+      expect(result.truncated).toBe(true);
+      expect(result.affected).toHaveLength(1);
+    });
+
+    it('deps() sets truncated when the transitive set hits maxNodes', () => {
+      const full = engine.deps(FA, 5)!;
+      expect(full.truncated).toBeUndefined();
+      const capped = engine.deps(FA, 5, 1)!;
+      expect(capped.truncated).toBe(true);
+      expect(capped.transitive).toHaveLength(1);
+    });
+
+    it('path() still finds the shortest path with level batching', () => {
+      const result = engine.path(FA, EXT)!;
+      expect(result.path.map((n) => n.id)).toEqual([FA, FC, EXT]);
+      expect(result.edges).toHaveLength(2);
+    });
+  });
+
+  describe('layers()', () => {
+    it('groups nodes by layer with per-kind counts', () => {
+      expect(engine.layers()).toEqual([
+        { layer: 'root', nodeCount: 4, kinds: { file: 4, class: 2 } },
+      ]);
     });
   });
 });

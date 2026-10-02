@@ -29,6 +29,17 @@ export interface GraphNode {
   /** Serialized JSON of additional metadata (e.g. visibility, return type) */
   meta: string;
   updatedAt: number; // unix ms
+  /** 1-based, inclusive */
+  startLine?: number;
+  /** 1-based, inclusive */
+  endLine?: number;
+  /** Single line, <= 200 chars, e.g. "async find(id: string): Promise<User | null>" */
+  signature?: string;
+  /** First paragraph of the leading doc comment, <= 300 chars, markers stripped */
+  doc?: string;
+  exported?: boolean;
+  /** Subset of: async, static, abstract, private, protected, public, readonly, default, generator, getter, setter */
+  modifiers?: string[];
 }
 
 // ─── Edge Types ──────────────────────────────────────────────────────────────
@@ -112,6 +123,8 @@ export interface DepsResult {
   target: GraphNode;
   direct: GraphNode[];
   transitive: GraphNode[];
+  /** True when the traversal hit the maxNodes safety cap */
+  truncated?: boolean;
 }
 
 export interface CallersResult {
@@ -128,6 +141,8 @@ export interface ImpactResult {
   target: GraphNode;
   /** All nodes that transitively import/depend on the target */
   affected: Array<{ node: GraphNode; depth: number; path: GraphNode[] }>;
+  /** True when the traversal hit the maxNodes safety cap */
+  truncated?: boolean;
 }
 
 export interface PathResult {

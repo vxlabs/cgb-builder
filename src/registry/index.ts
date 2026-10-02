@@ -36,9 +36,9 @@ export interface RegistrySearchResult {
 export class RegistryManager {
   private readonly registryPath: string;
 
-  constructor(registryDir?: string) {
+  constructor(registryDir?: string, readOnly = false) {
     const dir = registryDir ?? path.join(os.homedir(), '.cgb');
-    fs.mkdirSync(dir, { recursive: true });
+    if (!readOnly) fs.mkdirSync(dir, { recursive: true });
     this.registryPath = path.join(dir, 'registry.json');
   }
 
@@ -91,7 +91,7 @@ export class RegistryManager {
    * Search across all registered repos.
    * Opens each graph DB, runs searchNodes, and aggregates results.
    */
-  async search(query: string, maxPerRepo = 10): Promise<RegistrySearchResult[]> {
+  async search(query: string, maxPerRepo = 10, readOnly = false): Promise<RegistrySearchResult[]> {
     const entries = this.load();
     const results: RegistrySearchResult[] = [];
 
@@ -101,7 +101,7 @@ export class RegistryManager {
 
       try {
         const { GraphDb } = await import('../graph/db.js');
-        const db = new GraphDb(entry.root);
+        const db = new GraphDb(entry.root, { readOnly });
         await db.init();
 
         const nodes = db.searchNodes(query);

@@ -6,6 +6,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [1.3.0] - 2026-10-02
+
+### Added
+
+#### Storage & Database
+- **better-sqlite3** replaces sql.js for native performance (WAL mode, no FK cascades fixing stale edges)
+- **Schema v2** — stores line ranges, signatures, docs, exported flag, and modifiers for all languages
+- **FTS5 index** for full-text search with BM25 ranking
+- Automatic database rebuild on upgrade (existing `graph.db` files rebuilt on first run)
+
+#### Parser Improvements
+- **TS/JS/TSX extraction rewritten** — functions, methods, types, enums, namespaces extracted consistently
+- **Real exports edges** — re-exports now tracked across files
+- **Import resolution** — tsconfig `paths`, re-exports, scoped packages, dynamic imports
+- **Linker pass** adds TS/JS call edges and cross-file heritage resolution
+- **Python relative imports** fixed
+- **Metadata for all adapters** — line ranges, signatures, docs, exports now available for all languages
+
+#### Analysis
+- **Ranked search** — exact → prefix → BM25 (configurable via `cgb_search`)
+- **Louvain actually runs** for real community detection
+- **Bundles are symbol-scoped** and LOC-based for large functions
+- **Safe rename apply** with drift detection
+- **Real dead-code detection** (not heuristic-based)
+
+#### MCP (30 tools, up from 27)
+- **New:** `cgb_symbol` (lookup by name/id with callers/callees), `cgb_callers` (BFS), `cgb_callees` (BFS)
+- **Unified search:** `cgb_search` with optional hybrid (lexical + vector); `cgb_embed_search` deprecated alias
+- **Optional arguments:** `root`, `limit`, `offset` for pagination; `compact` output mode
+- **Auto-freshness** — read tools re-parse changed files (disable with `CGB_NO_AUTOREFRESH`)
+
+#### Claude Code Integration
+- **`cgb install --platform claude-code`** writes `.mcp.json`, optional PostToolUse hook, CLAUDE.md block
+- **`cgb update`** command for incremental re-indexing
+
+#### Hardening
+- **Stderr logging** (`CGB_DEBUG=1`)
+- **Safe git exec** — working-tree diffs without shell injection
+- **Viz on localhost** — binds 127.0.0.1 (configurable via `CGB_VIZ_HOST`)
+- **Batched traversals** for performance
+- **Lint/format enforced in CI**
+
+### Changed
+- `install --platform claude` now targets Claude Code (use `claude-desktop` for old behavior)
+- MCP output is compact JSON with repo-relative paths (node IDs stay absolute)
+- `cgb_detect_changes` with no base diffs working tree vs HEAD (previously HEAD~1..HEAD)
+
+### Breaking
+- Existing `.cgb/graph.db` files are automatically rebuilt on first run
+- sql.js removed (was optional before)
+
+### Fixed
+- TS/JS/TSX extraction stability and signature accuracy
+- Import cycle false positives in cross-file analysis
+- Method scoping in TS call graphs
+
+### Known Limitations
+- **Ruby:** adapter cannot parse (tree-sitter-ruby.wasm external scanner incompatible with web-tree-sitter 0.20.8)
+- **Call edges:** only TS/JS (C# same-class methods); instance calls like `obj.method()` unresolved (heuristic D7) causing dead-code false positives
+- **Scoping:** non-TS method scoping, several heritage/import gaps — see [`docs/languages/README.md`](docs/languages/README.md)
+
+---
+
 ## [1.2.0] - 2026-10-02
 
 ### Added

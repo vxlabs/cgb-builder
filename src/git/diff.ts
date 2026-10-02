@@ -1,12 +1,13 @@
 /**
  * Git diff integration.
- * Shells out to `git` to retrieve changed files between two refs,
- * including per-file line-change statistics.
+ * Shells out to `git` to retrieve changed files (between two refs and/or in the
+ * working tree), including per-file line-change statistics.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { debug } from '../util/log.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,10 +23,26 @@ export interface GitChange {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function run(cmd: string, cwd: string): string {
+const REF_RE = /^[A-Za-z0-9._/~^@{}-]+$/;
+
+/** Throws if `ref` is not a safe git ref (no leading '-', restricted charset). */
+export function validateRef(ref: string): string {
+  if (typeof ref !== 'string' || ref.startsWith('-') || !REF_RE.test(ref)) {
+    throw new Error(`Invalid git ref: ${ref}`);
+  }
+  return ref;
+}
+
+function run(args: string[], cwd: string): string {
   try {
-    return execSync(cmd, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+  } catch (err) {
+    debug('git', `git ${args.join(' ')} failed`, err);
     return '';
   }
 }
@@ -37,13 +54,15 @@ function run(cmd: string, cwd: string): string {
  */
 export function isGitRepo(root: string): boolean {
   try {
-    const result = execSync('git rev-parse --is-inside-work-tree', {
+    const result = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
       cwd: root,
-      encoding: 'utf-8',
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
     return result === 'true';
-  } catch {
+  } catch (err) {
+    debug('git', 'isGitRepo check failed', err);
     return false;
   }
 }
@@ -52,13 +71,13 @@ export function isGitRepo(root: string): boolean {
  * Returns the name of the default branch (main or master fallback).
  */
 export function getDefaultBranch(root: string): string {
-  const fromRemote = run('git symbolic-ref refs/remotes/origin/HEAD --short', root);
+  const fromRemote = run(['symbolic-ref', 'refs/remotes/origin/HEAD', '--short'], root);
   if (fromRemote) {
     // e.g. "origin/main" → "main"
     return fromRemote.split('/').pop() ?? 'main';
   }
   // Fallback: check if 'main' exists, else 'master'
-  const branches = run('git branch --list main master', root);
+  const branches = run(['branch', '--list', 'main', 'master'], root);
   if (branches.includes('main')) return 'main';
   return 'master';
 }
@@ -67,30 +86,14 @@ export function getDefaultBranch(root: string): string {
  * Returns the git repo root for a given directory.
  */
 export function getRepoRoot(root: string): string {
-  return run('git rev-parse --show-toplevel', root) || root;
+  return run(['rev-parse', '--show-toplevel'], root) || root;
 }
 
 /**
- * Retrieve all files changed between `base` and HEAD.
- * `base` defaults to `HEAD~1`.
- *
- * Parses both `--name-status` (for add/modify/delete/rename) and
- * `--numstat` (for line counts) and merges them by file path.
+ * Parse paired `--name-status` / `--numstat` output into GitChange entries.
  */
-export async function getGitChanges(root: string, base = 'HEAD~1'): Promise<GitChange[]> {
-  if (!isGitRepo(root)) {
-    throw new Error(`Not a git repository: ${root}`);
-  }
-
-  const repoRoot = getRepoRoot(root);
-
-  // ── Name/status: A, M, D, R<score> ────────────────────────────────────────
-  const nameStatusOutput = run(`git diff --name-status ${base}..HEAD`, repoRoot);
-
-  // ── Numstat: linesAdded linesRemoved filename ──────────────────────────────
-  const numstatOutput = run(`git diff --numstat ${base}..HEAD`, repoRoot);
-
-  // Build a map of filePath → { linesAdded, linesRemoved }
+function parseDiff(nameStatusOutput: string, numstatOutput: string, repoRoot: string): GitChange[] {
+  // filePath (relative) → { linesAdded, linesRemoved }
   const lineStats = new Map<string, { linesAdded: number; linesRemoved: number }>();
   for (const line of numstatOutput.split('\n').filter(Boolean)) {
     const parts = line.split('\t');
@@ -107,11 +110,8 @@ export async function getGitChanges(root: string, base = 'HEAD~1'): Promise<GitC
     });
   }
 
-  // Build change list from name-status
   const changes: GitChange[] = [];
-  const lines = nameStatusOutput.split('\n').filter(Boolean);
-
-  for (const line of lines) {
+  for (const line of nameStatusOutput.split('\n').filter(Boolean)) {
     const parts = line.split('\t');
     if (!parts.length) continue;
 
@@ -138,56 +138,97 @@ export async function getGitChanges(root: string, base = 'HEAD~1'): Promise<GitC
 
     if (!relPath) continue;
 
-    const absPath = path.resolve(repoRoot, relPath);
     const stats = lineStats.get(relPath) ?? { linesAdded: 0, linesRemoved: 0 };
-
     const change: GitChange = {
-      filePath: absPath,
+      filePath: path.resolve(repoRoot, relPath),
       status,
       linesAdded: stats.linesAdded,
       linesRemoved: stats.linesRemoved,
     };
-
-    if (oldRelPath) {
-      change.oldPath = path.resolve(repoRoot, oldRelPath);
-    }
-
+    if (oldRelPath) change.oldPath = path.resolve(repoRoot, oldRelPath);
     changes.push(change);
   }
+  return changes;
+}
 
-  // Also include untracked staged files (git diff --cached if base is "HEAD~1")
-  // For simplicity, also check working-tree changes to staged files
-  if (base === 'HEAD~1' || base === 'HEAD') {
-    const stagedOutput = run('git diff --cached --name-status', repoRoot);
-    const stagedNumstat = run('git diff --cached --numstat', repoRoot);
-
-    const stagedStats = new Map<string, { linesAdded: number; linesRemoved: number }>();
-    for (const line of stagedNumstat.split('\n').filter(Boolean)) {
-      const parts = line.split('\t');
-      if (parts.length < 3) continue;
-      stagedStats.set(parts[2], {
-        linesAdded: parseInt(parts[0], 10) || 0,
-        linesRemoved: parseInt(parts[1], 10) || 0,
-      });
+/** Untracked (not ignored) files, treated as fully added. */
+function getUntrackedChanges(repoRoot: string): GitChange[] {
+  const out = run(['ls-files', '-o', '--exclude-standard'], repoRoot);
+  const changes: GitChange[] = [];
+  for (const relPath of out.split('\n').filter(Boolean)) {
+    const absPath = path.resolve(repoRoot, relPath);
+    let linesAdded = 0;
+    try {
+      const stat = fs.statSync(absPath);
+      if (stat.isFile() && stat.size < 2 * 1024 * 1024) {
+        const content = fs.readFileSync(absPath, 'utf8');
+        linesAdded =
+          content.length === 0 ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0);
+      }
+    } catch (err) {
+      debug('git', `could not read untracked file ${absPath}`, err);
     }
+    changes.push({ filePath: absPath, status: 'added', linesAdded, linesRemoved: 0 });
+  }
+  return changes;
+}
 
-    const existingPaths = new Set(changes.map((c) => c.filePath));
-    for (const line of stagedOutput.split('\n').filter(Boolean)) {
-      const parts = line.split('\t');
-      if (!parts.length) continue;
-      const relPath = parts[1];
-      if (!relPath) continue;
-      const absPath = path.resolve(repoRoot, relPath);
-      if (existingPaths.has(absPath)) continue; // already captured
+/**
+ * Retrieve changed files.
+ *
+ * - No `base`: diff the working tree against `HEAD` (staged + unstaged) plus
+ *   untracked files (treated as fully added).
+ * - With `base`: `base..HEAD` (committed changes), additionally merged with
+ *   working-tree changes unless `includeWorkingTree` is false.
+ *
+ * Parses both `--name-status` (for add/modify/delete/rename) and `--numstat`
+ * (for line counts) and merges them by file path.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
+export async function getGitChanges(
+  root: string,
+  base?: string,
+  includeWorkingTree = true,
+): Promise<GitChange[]> {
+  if (!isGitRepo(root)) {
+    throw new Error(`Not a git repository: ${root}`);
+  }
 
-      const statusCode = parts[0];
-      let status: GitChange['status'] = 'modified';
-      if (statusCode === 'A') status = 'added';
-      else if (statusCode === 'D') status = 'deleted';
-      else if (statusCode.startsWith('R')) status = 'renamed';
+  if (base !== undefined) validateRef(base);
+  const repoRoot = getRepoRoot(root);
 
-      const stats = stagedStats.get(relPath) ?? { linesAdded: 0, linesRemoved: 0 };
-      changes.push({ filePath: absPath, status, ...stats });
+  let changes: GitChange[] = [];
+  if (base !== undefined) {
+    const range = `${base}..HEAD`;
+    changes = parseDiff(
+      run(['diff', '--name-status', range], repoRoot),
+      run(['diff', '--numstat', range], repoRoot),
+      repoRoot,
+    );
+  }
+
+  if (base === undefined || includeWorkingTree) {
+    const working = [
+      ...parseDiff(
+        run(['diff', '--name-status', 'HEAD'], repoRoot),
+        run(['diff', '--numstat', 'HEAD'], repoRoot),
+        repoRoot,
+      ),
+      ...getUntrackedChanges(repoRoot),
+    ];
+
+    const byPath = new Map(changes.map((c) => [c.filePath, c] as const));
+    for (const w of working) {
+      const existing = byPath.get(w.filePath);
+      if (!existing) {
+        changes.push(w);
+        byPath.set(w.filePath, w);
+        continue;
+      }
+      // Same file changed in a commit and in the working tree: combine.
+      existing.linesAdded += w.linesAdded;
+      existing.linesRemoved += w.linesRemoved;
+      if (w.status === 'deleted') existing.status = 'deleted';
     }
   }
 

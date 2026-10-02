@@ -1,36 +1,15 @@
 /**
  * Code Graph Builder — MCP Server
  *
- * Exposes cgb capabilities to AI agents (Cursor, Claude Code, etc.)
+ * Exposes cgb capabilities to AI agents (Claude Code, Cursor, etc.)
  * via the Model Context Protocol over stdio transport.
  *
- * Tools exposed:
- *   cgb_init              — scan a project and build / refresh the graph
- *   cgb_deps              — get dependencies of a file
- *   cgb_impact            — impact analysis for a file
- *   cgb_search            — search nodes by name / path
- *   cgb_bundle            — generate AI context bundle (Markdown)
- *   cgb_stats             — get graph statistics
- *   cgb_path              — shortest dependency path between two files
- *   cgb_detect_changes    — detect git changes with risk scoring
- *   cgb_review_context    — build review context for AI reviewers
- *   cgb_large_functions   — find large / complex functions by connectivity
- *   cgb_entry_points      — find call-chain entry points
- *   cgb_call_chain        — trace call chain from a node
- *   cgb_criticality       — score nodes by criticality
- *   cgb_communities       — detect communities / module clusters
- *   cgb_architecture      — high-level architecture overview
- *   cgb_dead_code         — detect unreachable / dead code
- *   cgb_rename_preview    — preview impact of renaming a symbol (with newName → stores for apply)
- *   cgb_apply_refactor    — apply a stored rename preview to disk
- *   cgb_refactor_suggest  — suggest structural refactoring opportunities
- *   cgb_wiki_generate     — generate Markdown wiki from graph
- *   cgb_wiki_section      — generate wiki for a single community
- *   cgb_registry_register — register a repo in the global registry
- *   cgb_registry_list     — list registered repos
- *   cgb_registry_search   — search across all registered repos
- *   cgb_embed_build       — compute and store vector embeddings
- *   cgb_embed_search      — hybrid search (BM25 + vector + LIKE → RRF)
+ * Conventions (see docs/MCP_TOOLS.md):
+ *   - `root` is optional everywhere: args.root ?? CGB_ROOT ?? cwd
+ *   - output is compact JSON with repo-relative paths; node IDs stay absolute
+ *   - list tools accept limit (default 50, max 500) and offset and return
+ *     { total, returned, offset, truncated, items }
+ *   - never write to stdout outside the MCP transport (use src/util/log.ts)
  */
 
 import * as path from 'path';
@@ -43,21 +22,164 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { warnOnce } from '../util/log.js';
+import { ensureFresh } from './freshness.js';
+import {
+  resolveRoot,
+  rel,
+  expandId,
+  compactNode,
+  page,
+  relPaths,
+  ok,
+  err,
+  type ToolResult,
+} from './format.js';
+import type { GraphDb } from '../graph/db.js';
+import type { GraphNode, NodeKind } from '../types.js';
+import type { GraphEngine } from '../graph/engine.js';
+import type { Parser } from '../parser/index.js';
+import type { BundleGenerator } from '../bundle/generator.js';
+
+function readVersion(): string {
+  try {
+    // dist/mcp -> package root, and src/mcp -> package root under ts-jest
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- untyped third-party/dynamic value; behaviour unchanged
+    const pkg = require('../../package.json') as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch (e) {
+    warnOnce('mcp', 'version', 'could not read package.json version', e);
+    return '0.0.0';
+  }
+}
+
+const VERSION = readVersion();
 
 // ─── Service bootstrap ────────────────────────────────────────────────────────
 
+<<<<<<< working
+interface Services {
+  root: string;
+  db: GraphDb;
+  engine: GraphEngine;
+  parser: Parser;
+  bundle: BundleGenerator;
+}
+
+async function getServices(root: string): Promise<Services> {
+=======
+export interface McpServerOptions {
+  /** Register only non-mutating tools and never write the DB or the filesystem. */
+  readOnly?: boolean;
+  /** Directory holding graph.db (overrides env CGB_DB_DIR and `<root>/.cgb`). */
+  dbDir?: string;
+  /** Default project root used when a tool call omits `root`. */
+  root?: string;
+}
+
+/** Tools that never modify the DB or the filesystem; the only ones served with `--read-only`. */
+export const READ_ONLY_TOOLS: readonly string[] = [
+  'cgb_deps',
+  'cgb_impact',
+  'cgb_search',
+  'cgb_bundle',
+  'cgb_stats',
+  'cgb_path',
+  'cgb_detect_changes',
+  'cgb_review_context',
+  'cgb_large_functions',
+  'cgb_entry_points',
+  'cgb_call_chain',
+  'cgb_criticality',
+  'cgb_communities',
+  'cgb_architecture',
+  'cgb_dead_code',
+  'cgb_rename_preview',
+  'cgb_refactor_suggest',
+  'cgb_wiki_section',
+  'cgb_registry_list',
+  'cgb_registry_search',
+  'cgb_embed_search',
+  'cgb_embed_similar',
+];
+
+let mcpOptions: McpServerOptions = {};
+
 async function getServices(root: string) {
+>>>>>>> headless
   const { GraphDb } = await import('../graph/db.js');
   const { GraphEngine } = await import('../graph/engine.js');
   const { Parser } = await import('../parser/index.js');
   const { BundleGenerator } = await import('../bundle/generator.js');
 
+<<<<<<< working
   const db = new GraphDb(root);
+  try {
+    await db.init();
+  } catch (e) {
+    db.close();
+    throw e;
+  }
+=======
+  const db = new GraphDb(root, { dbDir: mcpOptions.dbDir, readOnly: mcpOptions.readOnly });
   await db.init();
+>>>>>>> headless
   const engine = new GraphEngine(db);
   const parser = new Parser(db, root);
   const bundle = new BundleGenerator(db, engine, root);
-  return { db, engine, parser, bundle };
+  return { root, db, engine, parser, bundle };
+}
+
+/**
+ * Open the graph for `args.root`, run fn, and always close the DB.
+ * Unless needGraph is false, an empty graph yields a "Graph not built" error.
+ * Unless fresh is false, changed files are re-parsed first (see freshness.ts); when that
+ * is cut short the JSON result gets `stale: true`.
+ */
+async function withGraph(
+  args: { root?: string },
+  fn: (s: Services) => Promise<ToolResult> | ToolResult,
+  needGraph = true,
+  fresh = true,
+): Promise<ToolResult> {
+  const root = resolveRoot(args);
+  if (!fs.existsSync(root)) return err(`Directory does not exist: ${root}`);
+  const s = await getServices(root);
+  try {
+    if (needGraph && s.db.getStats().nodes === 0) {
+      return err(`Graph not built for ${root}`, 'Call cgb_init first');
+    }
+    let stale = false;
+    if (fresh && s.db.getStats().nodes > 0) {
+      try {
+        stale = (await ensureFresh(root, s.db)).skipped;
+      } catch (e) {
+        warnOnce('mcp', 'freshness', 'auto-refresh failed; serving the graph as is', e);
+      }
+    }
+    const result = await fn(s);
+    return stale ? markStale(result) : result;
+  } finally {
+    s.db.close();
+  }
+}
+
+/** Add stale:true and a hint to a JSON-object result. */
+function markStale(r: ToolResult): ToolResult {
+  if (r.isError) return r;
+  try {
+    const data = JSON.parse(r.content[0].text) as unknown;
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      return ok({
+        ...data,
+        stale: true,
+        staleHint: 'Many files changed; run cgb_init to refresh the graph',
+      });
+    }
+  } catch (e) {
+    warnOnce('mcp', 'stale', 'could not annotate result as stale', e);
+  }
+  return r;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,916 +188,1083 @@ function resolveTarget(root: string, target: string): string {
   return path.isAbsolute(target) ? target : path.resolve(root, target);
 }
 
-function ok(data: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-  };
+interface PageArgs {
+  limit?: number;
+  offset?: number;
 }
 
-function err(message: string): {
-  content: Array<{ type: 'text'; text: string }>;
-  isError: boolean;
-} {
-  return {
-    isError: true,
-    content: [{ type: 'text', text: message }],
-  };
+/** Upper bound used when asking an analyzer for "everything" before paginating. */
+const ALL = 100000;
+
+/** Community with a bounded file list (full lists can be thousands of entries). */
+function compactCommunity<T extends { files: string[] }>(root: string, c: T) {
+  const files = c.files.map((f) => rel(root, f));
+  return { ...relPaths(root, c), files: files.slice(0, 15), fileCount: files.length };
 }
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
+const ROOT_PROP = {
+  type: 'string',
+  description:
+    'Project root. Optional: defaults to the CGB_ROOT env var, then the server working directory.',
+};
+const LIMIT_PROP = { type: 'number', description: 'Max items to return (default 50, max 500)' };
+const OFFSET_PROP = { type: 'number', description: 'Items to skip, for paging (default 0)' };
+const PAGING = { limit: LIMIT_PROP, offset: OFFSET_PROP };
+
+function tool(
+  name: string,
+  description: string,
+  properties: Record<string, unknown>,
+  required: string[] = [],
+  withRoot = true,
+) {
+  return {
+    name,
+    description,
+    inputSchema: {
+      type: 'object' as const,
+      properties: withRoot ? { root: ROOT_PROP, ...properties } : properties,
+      required,
+    },
+  };
+}
+
 const TOOLS = [
-  {
-    name: 'cgb_init',
-    description:
-      'Scan a project directory and build (or refresh) the code graph. ' +
-      'Must be run before using any other cgb tools. ' +
-      'Returns graph stats and architectural layer summary.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root directory' },
-        force: { type: 'boolean', description: 'Re-parse all files even if unchanged (default: false)' },
+  tool(
+    'cgb_init',
+    'Scans the project and builds or refreshes the code graph; returns graph stats and layers. ' +
+      'Run first on a new project (other tools return "Graph not built" until then); re-run after large changes.',
+    {
+      force: {
+        type: 'boolean',
+        description: 'Re-parse all files even if unchanged (default: false)',
       },
-      required: ['root'],
     },
-  },
-  {
-    name: 'cgb_deps',
-    description:
-      'Get all dependencies (imports) of a file. ' +
-      'Returns direct and transitive dependencies with file paths.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory (must have been initialized with cgb_init)' },
-        target: { type: 'string', description: 'Relative or absolute path to the file' },
-        depth: { type: 'number', description: 'How many levels of transitive deps to include (default: 3)' },
+  ),
+  tool(
+    'cgb_deps',
+    'Returns what a file imports: direct and transitive dependencies as compact nodes (paged). ' +
+      'Use for "what does this file depend on"; use cgb_impact for the reverse direction.',
+    {
+      target: { type: 'string', description: 'File path, relative to root or absolute' },
+      depth: { type: 'number', description: 'Transitive depth (default: 3)' },
+      ...PAGING,
+    },
+    ['target'],
+  ),
+  tool(
+    'cgb_impact',
+    'Returns the files affected if a file changes (reverse dependencies with depth), paged, nearest first. ' +
+      'Use before editing a widely used file; use cgb_detect_changes for a whole git diff.',
+    {
+      target: { type: 'string', description: 'File path, relative to root or absolute' },
+      depth: { type: 'number', description: 'Maximum traversal depth (default: 10)' },
+      ...PAGING,
+    },
+    ['target'],
+  ),
+  tool(
+    'cgb_symbol',
+    'The first tool to use when you know a name. Looks up a symbol by name or node ID (falls back to ranked search) and returns, per match: ' +
+      'file, line range, signature, doc, caller and callee counts, top 5 callers and callees, containing class and a readHint ("Read <file> lines a-b"). ' +
+      'Replaces grep plus read; then use cgb_callers / cgb_callees to walk the call graph.',
+    {
+      name: { type: 'string', description: 'Symbol name, e.g. "GraphDb" or "parseFile"' },
+      id: {
+        type: 'string',
+        description: 'Node ID; repo-relative paths accepted. Takes precedence over name.',
       },
-      required: ['root', 'target'],
-    },
-  },
-  {
-    name: 'cgb_impact',
-    description:
-      'Impact analysis: determine which files would be affected if a given file changes. ' +
-      'Returns a sorted list of affected files with their dependency depth.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        target: { type: 'string', description: 'Relative or absolute path to the file being changed' },
-        depth: { type: 'number', description: 'Maximum traversal depth (default: 10)' },
+      kind: {
+        type: 'string',
+        description: 'Restrict to a kind: function, method, class, interface, type, file, module',
       },
-      required: ['root', 'target'],
-    },
-  },
-  {
-    name: 'cgb_search',
-    description:
-      'Search for graph nodes by name, description, or file path. ' +
-      'Useful for finding classes, functions, or files without knowing their exact location.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        query: { type: 'string', description: 'Search term (matches node name, description, and file path)' },
+      file: {
+        type: 'string',
+        description: 'Restrict to files whose repo-relative path contains this text',
       },
-      required: ['root', 'query'],
+      limit: { type: 'number', description: 'Max matches (default 5, max 50)' },
     },
-  },
-  {
-    name: 'cgb_bundle',
-    description:
-      'Generate an AI-optimised context bundle for a file. ' +
-      'The bundle is a compact Markdown document containing: file summary, ' +
-      'direct dependencies, reverse dependencies, class hierarchy, and optionally the full source. ' +
-      'Use this to give an AI agent the structural context it needs before editing a file.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        target: { type: 'string', description: 'Relative or absolute path to the file to bundle' },
-        depth: { type: 'number', description: 'Dependency traversal depth (default: 2)' },
-        includeSource: { type: 'boolean', description: 'Include the full source of the target file in the bundle (default: true)' },
+  ),
+  tool(
+    'cgb_callers',
+    'Who calls this symbol: BFS over calls edges, nearest first. Items are compact nodes with depth and via (edge reason). ' +
+      'Use before changing a function signature; use cgb_impact for file-level blast radius.',
+    {
+      id: {
+        type: 'string',
+        description: 'Node ID (get it from cgb_symbol or cgb_search); repo-relative paths accepted',
       },
-      required: ['root', 'target'],
+      depth: { type: 'number', description: 'Hops to follow (default 1, max 5)' },
+      ...PAGING,
     },
-  },
-  {
-    name: 'cgb_stats',
-    description:
-      'Get summary statistics for the project graph: ' +
-      'file count, node count, edge count, node type breakdown, ' +
-      'cycle detection results, and architectural layer distribution.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
+    ['id'],
+  ),
+  tool(
+    'cgb_callees',
+    'What this symbol calls: BFS over calls edges, nearest first. Items are compact nodes with depth and via (edge reason). ' +
+      'Use to understand a function without reading it; cgb_call_chain gives the same trace as a flat list.',
+    {
+      id: {
+        type: 'string',
+        description: 'Node ID (get it from cgb_symbol or cgb_search); repo-relative paths accepted',
       },
-      required: ['root'],
+      depth: { type: 'number', description: 'Hops to follow (default 1, max 5)' },
+      ...PAGING,
     },
-  },
-  {
-    name: 'cgb_path',
-    description:
-      'Find the shortest dependency path between two files. ' +
-      'Useful for understanding how one module depends (transitively) on another.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        from: { type: 'string', description: 'Relative or absolute path to the source file' },
-        to: { type: 'string', description: 'Relative or absolute path to the target file' },
+    ['id'],
+  ),
+  tool(
+    'cgb_search',
+    'Single search entry point. Ranks exact name, then prefix, then full-text matches; returns compact nodes with matchedBy and score, paged. ' +
+      'Conceptual queries (several words) automatically add vector matching when embeddings exist (cgb_embed_build); pass semantic:true to force it.',
+    {
+      query: { type: 'string', description: 'Search term or free text' },
+      kinds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Restrict to node kinds, e.g. ["function","class"]',
       },
-      required: ['root', 'from', 'to'],
-    },
-  },
-  {
-    name: 'cgb_detect_changes',
-    description:
-      'Detect git changes and analyse their impact on the code graph. ' +
-      'Returns a risk-scored breakdown of every changed file including blast radius, ' +
-      'security relevance, and test coverage gaps. ' +
-      'Requires the project to have been initialised with cgb_init and to be a git repository.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be inside a git repository)' },
-        base: { type: 'string', description: 'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234' },
+      includeExternal: {
+        type: 'boolean',
+        description: 'Include external packages (default false)',
       },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_review_context',
-    description:
-      'Build a focused code-review context for all changes since a given git ref. ' +
-      'Returns changed files, blast-radius (affected) files, relevant test files, ' +
-      'top focus areas, and a Markdown review brief. ' +
-      'Ideal for priming an AI reviewer before it reads the diff.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be inside a git repository)' },
-        base: { type: 'string', description: 'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234' },
-        format: {
-          type: 'string',
-          enum: ['json', 'markdown'],
-          description: 'Output format — "json" for structured data, "markdown" for a human-readable brief (default: markdown)',
-        },
+      semantic: { type: 'boolean', description: 'Force hybrid lexical + vector search' },
+      contextFiles: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Semantic mode: files whose nodes get a 1.5x boost',
       },
-      required: ['root'],
+      ...PAGING,
     },
-  },
-  // ─── Flows tools ──────────────────────────────────────────────────────────
-  {
-    name: 'cgb_large_functions',
-    description:
-      'Find the most complex functions and methods by connectivity metrics (fan-in + fan-out). ' +
-      'High fan-out functions often need refactoring; high fan-in functions are critical hotspots.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        limit: { type: 'number', description: 'Maximum results to return (default: 20)' },
+    ['query'],
+  ),
+  tool(
+    'cgb_bundle',
+    'Returns a Markdown context bundle for one file or symbol: summary, dependencies, reverse dependencies, hierarchy, optional source. ' +
+      'Use to load full structural context before editing a file.',
+    {
+      target: {
+        type: 'string',
+        description:
+          'File path (relative to root or absolute) or a node ID such as "function:src/a.ts#foo"',
       },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_entry_points',
-    description:
-      'Find entry points: functions, methods, or files that have no inbound calls ' +
-      '(i.e. they are the "top" of call chains — likely public APIs or CLI handlers). ' +
-      'Sorted by fan-out descending.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        limit: { type: 'number', description: 'Maximum entry points to return (default: 30)' },
+      depth: { type: 'number', description: 'Dependency depth (default: 2)' },
+      includeSource: { type: 'boolean', description: 'Include the file source (default: true)' },
+      maxTargetLines: {
+        type: 'number',
+        description: 'Max source lines for the target (default: 200)',
       },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_call_chain',
-    description:
-      'Trace the full call chain starting from a given node. ' +
-      'Returns each step in the chain with depth, name, file, and kind. ' +
-      'Useful for understanding execution flows and debugging.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        nodeId: { type: 'string', description: 'Node ID to trace from (e.g. "function:path/to/file.ts:myFunc")' },
-        maxDepth: { type: 'number', description: 'Maximum depth to trace (default: 5)' },
+      includeDependencySource: {
+        type: 'boolean',
+        description: 'Include short source snippets of internal dependencies (default: false)',
       },
-      required: ['root', 'nodeId'],
     },
-  },
-  {
-    name: 'cgb_criticality',
-    description:
-      'Score all non-external functions, methods, classes and interfaces by criticality. ' +
-      'Criticality is computed from fan-in (weight 3×) + fan-out. ' +
-      'Returns top nodes sorted by score with labels: critical / high / medium / low.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        limit: { type: 'number', description: 'Maximum results to return (default: 20)' },
+    ['target'],
+  ),
+  tool(
+    'cgb_stats',
+    'Returns graph summary: file, node and edge counts, counts by kind, layers, cycle count and orphan count. ' +
+      'Cheap health check; use cgb_architecture for a deeper overview.',
+    {},
+  ),
+  tool(
+    'cgb_path',
+    'Finds the shortest dependency path between two files. Use to explain how module A reaches module B.',
+    {
+      from: { type: 'string', description: 'Source file path, relative or absolute' },
+      to: { type: 'string', description: 'Target file path, relative or absolute' },
+    },
+    ['from', 'to'],
+  ),
+  tool(
+    'cgb_detect_changes',
+    'Analyses a git diff against the graph: per-file risk score (0-100), blast radius, security relevance, test gaps. ' +
+      'Use before committing or merging; use cgb_review_context for a reviewer brief.',
+    { base: { type: 'string', description: 'Git base ref (default: HEAD~1), e.g. main, HEAD~3' } },
+  ),
+  tool(
+    'cgb_review_context',
+    'Builds a review brief for changes since a git ref: changed files, affected files, tests, focus areas. ' +
+      'Use to prime a code review; cgb_detect_changes gives raw risk scoring instead.',
+    {
+      base: { type: 'string', description: 'Git base ref (default: HEAD~1)' },
+      format: {
+        type: 'string',
+        enum: ['json', 'markdown'],
+        description: 'Output format (default: markdown)',
       },
-      required: ['root'],
     },
-  },
-  // ─── Community tools ──────────────────────────────────────────────────────
-  {
-    name: 'cgb_communities',
-    description:
-      'Detect communities (module clusters) using weighted Louvain algorithm. ' +
-      'Persists results to the graph DB (writes community_id to nodes) so getCommunityMembers works. ' +
-      'Returns each cluster with label, files, role, cohesion score, and top hub symbols. Sorted by size descending.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
+  ),
+  tool(
+    'cgb_large_functions',
+    'Lists the most connected functions and methods (fan-in + fan-out), highest first, paged. ' +
+      'Use to find refactoring candidates and hotspots.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_entry_points',
+    'Lists functions, methods and files with no inbound calls (tops of call chains), by fan-out descending, paged. ' +
+      'Use to find public APIs and handlers; follow with cgb_call_chain.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_call_chain',
+    'Traces outgoing calls from a node, with depth per step, paged. ' +
+      'Use to follow an execution flow; get the node ID from cgb_symbol or cgb_entry_points.',
+    {
+      nodeId: {
+        type: 'string',
+        description:
+          'Node ID: "<kind>:<path>#<symbol>", e.g. "function:src/a.ts#myFunc". Repo-relative paths are accepted.',
       },
-      required: ['root'],
+      maxDepth: { type: 'number', description: 'Maximum depth (default: 5)' },
+      ...PAGING,
     },
-  },
-  {
-    name: 'cgb_architecture',
-    description:
-      'Generate a high-level architecture overview: communities, dependency layers, ' +
-      'circular dependencies, orphan files, and a health score. ' +
-      'Ideal for onboarding or architecture review sessions.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
+    ['nodeId'],
+  ),
+  tool(
+    'cgb_criticality',
+    'Scores functions, methods, classes and interfaces by criticality (fan-in x3 + fan-out) with labels critical/high/medium/low, paged. ' +
+      'Use to decide where changes need the most care.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_communities',
+    'Detects module clusters (Louvain, or connected components as fallback) and stores community ids on nodes. ' +
+      'Returns clusters with label, role, cohesion, hubs and up to 15 files each, paged, largest first.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_architecture',
+    'Returns an architecture overview: clusters (paged), layers, cycles, orphan files, health score. ' +
+      'Use for onboarding or architecture review; cgb_stats is the cheaper summary.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_dead_code',
+    'Lists symbols with no inbound calls or imports (test files excluded), paged. Candidates only: verify before deleting. ' +
+      'With includeUnusedExports, also returns exported functions/classes nobody references or imports as "unusedExports".',
+    {
+      includeUnusedExports: {
+        type: 'boolean',
+        description: 'Also list unused exported symbols (default: false)',
       },
-      required: ['root'],
+      ...PAGING,
     },
-  },
-  // ─── Refactor tools ───────────────────────────────────────────────────────
-  {
-    name: 'cgb_dead_code',
-    description:
-      'Find potentially dead code: functions, methods, classes, and types with no inbound ' +
-      'calls or imports. Does not flag test-file nodes. ' +
-      'Use as a starting point for cleanup — always verify before deleting.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        limit: { type: 'number', description: 'Maximum results to return (default: 30)' },
+  ),
+  tool(
+    'cgb_rename_preview',
+    'Previews renaming a symbol. With newName it returns concrete per-occurrence edits (items: file, line, column, before, after, confidence), warnings and a refactorId for cgb_apply_refactor; ' +
+      'an invalid identifier is an error. Without newName, edge-level impact only. Never writes to disk.',
+    {
+      nodeId: {
+        type: 'string',
+        description: 'Symbol node ID (find with cgb_symbol); repo-relative paths accepted',
       },
-      required: ['root'],
+      newName: { type: 'string', description: 'New name; required to get a refactorId' },
     },
-  },
-  {
-    name: 'cgb_rename_preview',
-    description:
-      'Preview the impact of renaming a symbol. ' +
-      'When newName is provided, returns concrete file edits with a refactorId that can be passed to cgb_apply_refactor. ' +
-      'When newName is omitted, returns edge-level impact only (no stored preview). ' +
-      'Does NOT make any disk changes.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        nodeId: { type: 'string', description: 'Node ID of the symbol to rename (use cgb_search to find it)' },
-        newName: { type: 'string', description: 'New name for the symbol (required to generate a refactorId for apply)' },
+    ['nodeId'],
+  ),
+  tool(
+    'cgb_apply_refactor',
+    'Applies a stored rename preview to disk using a refactorId from cgb_rename_preview, then re-indexes the touched files (reparsed: true). ' +
+      'Aborts with nothing written and returns conflicts if any line changed since the preview. Previews expire after 10 minutes; paths are checked against the project root.',
+    { refactorId: { type: 'string', description: '8-char hex id from cgb_rename_preview' } },
+    ['refactorId'],
+  ),
+  tool(
+    'cgb_refactor_suggest',
+    'Suggests structural refactors from connectivity: extract helpers for high fan-out functions, split high fan-in files. Paged. ' +
+      'Use after cgb_large_functions to turn hotspots into actions.',
+    { ...PAGING },
+  ),
+  tool(
+    'cgb_wiki_generate',
+    'Generates a Markdown wiki (one page per community plus an index). Returns the page list (paged) or, with outputDir, writes the files. ' +
+      'Use cgb_wiki_section for a single page.',
+    {
+      outputDir: {
+        type: 'string',
+        description: 'Write .md files here (relative to root or absolute)',
       },
-      required: ['root', 'nodeId'],
+      ...PAGING,
     },
-  },
-  {
-    name: 'cgb_apply_refactor',
-    description:
-      'Apply a previously previewed rename to disk. ' +
-      'Requires a refactorId from cgb_rename_preview (with newName). ' +
-      'Previews expire after 10 minutes. Includes path-traversal safety checks.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (used for safety checks)' },
-        refactorId: { type: 'string', description: '8-char hex ID returned by cgb_rename_preview' },
+  ),
+  tool(
+    'cgb_wiki_section',
+    'Generates the wiki page for one community and returns its Markdown. ' +
+      'Pass the 0-based index of the community from cgb_communities.',
+    { communityIndex: { type: 'number', description: '0-based community index' } },
+    ['communityIndex'],
+  ),
+  tool(
+    'cgb_registry_register',
+    'Registers a project in the global registry (~/.cgb/registry.json) so cgb_registry_search can query it.',
+    { name: { type: 'string', description: 'Friendly name (default: directory name)' } },
+  ),
+  tool(
+    'cgb_registry_list',
+    'Lists projects in the global registry, paged.',
+    { ...PAGING },
+    [],
+    false,
+  ),
+  tool(
+    'cgb_registry_search',
+    'Searches symbols across all registered projects; each result names its source project, paged. ' +
+      'Use cgb_search for the current project only.',
+    {
+      query: { type: 'string', description: 'Search term' },
+      maxPerRepo: { type: 'number', description: 'Max results per repo (default: 10)' },
+      ...PAGING,
+    },
+    ['query'],
+    false,
+  ),
+  tool(
+    'cgb_embed_build',
+    'Computes and stores vector embeddings for graph nodes (provider local, google or minimax). ' +
+      'Optional: improves cgb_search (conceptual queries) and cgb_embed_similar; without it they fall back to TF-IDF. Local downloads ~30MB on first use.',
+    {
+      provider: { type: 'string', description: '"local" | "google" | "minimax" (default: local)' },
+    },
+  ),
+  tool(
+    'cgb_embed_search',
+    'DEPRECATED alias of cgb_search (same handler and arguments); use cgb_search. ' +
+      'Hybrid search fuses exact/prefix/FTS5 BM25 matches with vector similarity when embeddings exist.',
+    {
+      query: { type: 'string', description: 'Free text, e.g. "authentication middleware"' },
+      contextFiles: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Files whose nodes get a 1.5x boost',
       },
-      required: ['root', 'refactorId'],
+      semantic: { type: 'boolean', description: 'Force hybrid lexical + vector search' },
+      ...PAGING,
     },
-  },
-  {
-    name: 'cgb_refactor_suggest',
-    description:
-      'Suggest structural refactoring opportunities based on connectivity metrics. ' +
-      'Flags high fan-out functions (extract helpers) and high fan-in files (split module).',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        limit: { type: 'number', description: 'Maximum suggestions to return (default: 10)' },
-      },
-      required: ['root'],
+    ['query'],
+  ),
+  tool(
+    'cgb_embed_similar',
+    'Finds nodes semantically similar to a given node, paged. Use to find related functions or classes.',
+    {
+      nodeId: { type: 'string', description: 'Reference node ID; repo-relative paths accepted' },
+      ...PAGING,
     },
-  },
-  // ─── Wiki tools ───────────────────────────────────────────────────────────
-  {
-    name: 'cgb_wiki_generate',
-    description:
-      'Generate a Markdown wiki from the code graph. ' +
-      'Creates one page per community plus an index/overview page. ' +
-      'Optionally writes files to disk.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        outputDir: { type: 'string', description: 'Optional output directory. If set, writes .md files there.' },
-      },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_wiki_section',
-    description:
-      'Generate a Markdown wiki page for a single community / module cluster. ' +
-      'Pass the community index (0-based) from cgb_communities output.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Project root directory' },
-        communityIndex: { type: 'number', description: 'Index (0-based) of the community from cgb_communities output' },
-      },
-      required: ['root', 'communityIndex'],
-    },
-  },
-  // ─── Registry tools ───────────────────────────────────────────────────────
-  {
-    name: 'cgb_registry_register',
-    description:
-      'Register a project in the global cgb registry (~/.cgb/registry.json). ' +
-      'Allows cross-repo search with cgb_registry_search.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root' },
-        name: { type: 'string', description: 'Optional friendly name for the project (defaults to directory name)' },
-      },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_registry_list',
-    description: 'List all projects registered in the global cgb registry.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-      required: [],
-    },
-  },
-  {
-    name: 'cgb_registry_search',
-    description:
-      'Search for symbols across all registered cgb projects. ' +
-      'Returns matching nodes from every repo along with their source project.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        query: { type: 'string', description: 'Search term to match against node names, descriptions and file paths' },
-        maxPerRepo: { type: 'number', description: 'Maximum results per repo (default: 10)' },
-      },
-      required: ['query'],
-    },
-  },
-  // ─── Embed tools ─────────────────────────────────────────────────────────────
-  {
-    name: 'cgb_embed_build',
-    description:
-      'Compute and store vector embeddings for all graph nodes. ' +
-      'Required before cgb_embed_search can use real vector similarity (otherwise falls back to TF-IDF). ' +
-      'Supports provider: "local" (@xenova/transformers), "google" (GOOGLE_API_KEY), "minimax" (MINIMAX_API_KEY). ' +
-      '"local" downloads ~30MB ONNX model on first use.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root' },
-        provider: { type: 'string', description: 'Embedding provider: "local" | "google" | "minimax" (default: "local")' },
-      },
-      required: ['root'],
-    },
-  },
-  {
-    name: 'cgb_embed_search',
-    description:
-      'Hybrid semantic search: BM25 (FTS5) + vector cosine + keyword LIKE, merged via Reciprocal Rank Fusion. ' +
-      'Falls back to TF-IDF if no embeddings have been built (run cgb_embed_build first for best results). ' +
-      'Returns nodes whose name/kind/path/description best match the query.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be initialised with cgb_init)' },
-        query: { type: 'string', description: 'Free-text query — e.g. "authentication middleware" or "database connection pool"' },
-        limit: { type: 'number', description: 'Maximum results to return (default: 20)' },
-        contextFiles: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'File paths to boost — nodes in these files score 1.5x higher',
-        },
-      },
-      required: ['root', 'query'],
-    },
-  },
-  {
-    name: 'cgb_embed_similar',
-    description:
-      'Find nodes that are semantically similar to a given node (by id). ' +
-      'Useful for finding related functions, classes, or files.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {
-        root: { type: 'string', description: 'Absolute path to the project root' },
-        nodeId: { type: 'string', description: 'ID of the reference node' },
-        limit: { type: 'number', description: 'Maximum results (default: 10)' },
-      },
-      required: ['root', 'nodeId'],
-    },
-  },
+    ['nodeId'],
+  ),
 ];
 
 // ─── Tool handlers ────────────────────────────────────────────────────────────
 
-async function handleInit(args: { root: string; force?: boolean }) {
-  const { root, force = false } = args;
-  if (!fs.existsSync(root)) {
-    return err(`Directory does not exist: ${root}`);
-  }
+type RootArg = { root?: string };
 
-  const { db, parser, engine } = await getServices(root);
-  try {
-    const result = await parser.scanAll(force);
-    const stats = db.getStats();
-    const byKind = db.getNodeCountByKind();
-    const layers = engine.layers();
-
-    return ok({
-      success: true,
-      durationMs: result.durationMs,
-      parsed: result.parsed,
-      skipped: result.skipped,
-      errors: result.errors.slice(0, 10),
-      graph: {
-        files: stats.files,
-        nodes: stats.nodes,
-        edges: stats.edges,
-        byKind,
-      },
-      layers: layers.slice(0, 15),
-    });
-  } finally {
-    db.close();
-  }
+async function handleInit(args: RootArg & { force?: boolean }) {
+  const { force = false } = args;
+  return withGraph(
+    args,
+    async ({ db, parser, engine, root }) => {
+      const result = await parser.scanAll(force);
+      const stats = db.getStats();
+      return ok({
+        success: true,
+        root,
+        durationMs: result.durationMs,
+        parsed: result.parsed,
+        skipped: result.skipped,
+        errors: relPaths(root, result.errors.slice(0, 10)),
+        graph: {
+          files: stats.files,
+          nodes: stats.nodes,
+          edges: stats.edges,
+          byKind: db.getNodeCountByKind(),
+        },
+        layers: engine.layers().slice(0, 15),
+      });
+    },
+    false,
+    false,
+  );
 }
 
-async function handleDeps(args: { root: string; target: string; depth?: number }) {
-  const { root, target, depth = 3 } = args;
-  const { db, engine } = await getServices(root);
-  try {
-    const absTarget = resolveTarget(root, target);
-    const nodeId = `file:${absTarget}`;
-    const result = engine.deps(nodeId, depth);
-    if (!result) {
-      return err(`File not found in graph: ${target}\nRun cgb_init first.`);
+async function handleDeps(args: RootArg & PageArgs & { target: string; depth?: number }) {
+  const { target, depth = 3 } = args;
+  return withGraph(args, ({ root, engine }) => {
+    const result = engine.deps(`file:${resolveTarget(root, target)}`, depth);
+    if (!result)
+      return err(`File not found in graph: ${target}`, 'Call cgb_init first, or check the path');
+    return ok({
+      target: compactNode(root, result.target),
+      direct: page(
+        result.direct.map((n) => compactNode(root, n)),
+        args,
+      ),
+      transitive: page(
+        result.transitive.map((n) => compactNode(root, n)),
+        args,
+      ),
+    });
+  });
+}
+
+async function handleImpact(args: RootArg & PageArgs & { target: string; depth?: number }) {
+  const { target, depth = 10 } = args;
+  return withGraph(args, ({ root, engine }) => {
+    const result = engine.impact(`file:${resolveTarget(root, target)}`, depth);
+    if (!result)
+      return err(`File not found in graph: ${target}`, 'Call cgb_init first, or check the path');
+    return ok({
+      target: compactNode(root, result.target),
+      ...page(
+        result.affected.map((a) => ({ depth: a.depth, ...compactNode(root, a.node) })),
+        args,
+      ),
+    });
+  });
+}
+
+const MAX_SEARCH = 500;
+const MAX_HOPS = 5;
+const MAX_VISITED = 5000;
+const TOP_N = 5;
+const KIND_ORDER = [
+  'class',
+  'interface',
+  'function',
+  'method',
+  'type',
+  'module',
+  'file',
+  'external_dep',
+];
+
+type CompactNodeLike = ReturnType<typeof compactNode>;
+
+interface SearchArgs extends RootArg, PageArgs {
+  query: string;
+  kinds?: string[];
+  includeExternal?: boolean;
+  semantic?: boolean;
+  contextFiles?: string[];
+}
+
+/** cgb_search, and its deprecated alias cgb_embed_search. */
+async function handleSearch(args: SearchArgs) {
+  return withGraph(args, async ({ root, db }) => {
+    const query = String(args.query ?? '');
+    const kinds = args.kinds?.length ? (args.kinds as NodeKind[]) : undefined;
+    const useHybrid =
+      args.semantic === true || (/\s/.test(query.trim()) && db.getEmbeddingCount() > 0);
+
+    const items: Array<CompactNodeLike & { matchedBy: string; score: number }> = [];
+    if (useHybrid) {
+      const { hybridSearch } = await import('../embed/index.js');
+      const contextFiles = args.contextFiles?.map((f) => resolveTarget(root, f));
+      const hits = await hybridSearch(db, query, { limit: MAX_SEARCH, contextFiles });
+      const byId = new Map(db.getNodesByIds(hits.map((h) => h.id)).map((n) => [n.id, n]));
+      for (const h of hits) {
+        const n = byId.get(h.id);
+        if (!n) continue;
+        if (n.isExternal && !args.includeExternal) continue;
+        if (kinds && !kinds.includes(n.kind)) continue;
+        items.push({ ...compactNode(root, n), matchedBy: 'hybrid', score: h.score });
+      }
+    } else {
+      const ranked = db.searchNodesRanked(query, {
+        limit: MAX_SEARCH,
+        kinds,
+        includeExternal: args.includeExternal,
+      });
+      const byId = new Map(db.getNodesByIds(ranked.map((r) => r.id)).map((n) => [n.id, n]));
+      for (const r of ranked) {
+        const n = byId.get(r.id);
+        if (n)
+          items.push({
+            ...compactNode(root, n),
+            matchedBy: r.matchedBy,
+            score: Math.round(r.score * 10000) / 10000,
+          });
+      }
+    }
+    return ok({ query, ...page(items, args) });
+  });
+}
+
+/** Unique nodes by id in order; symbol nodes before file nodes. */
+function uniqueNodes(rows: Array<{ node: GraphNode }>): GraphNode[] {
+  const seen = new Set<string>();
+  const out: GraphNode[] = [];
+  for (const { node } of rows) {
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    out.push(node);
+  }
+  return out.sort((a, b) => Number(a.kind === 'file') - Number(b.kind === 'file'));
+}
+
+async function handleSymbol(
+  args: RootArg & { name?: string; id?: string; kind?: string; file?: string; limit?: number },
+) {
+  return withGraph(args, ({ root, db, engine }) => {
+    const { name, id, kind, file } = args;
+    if (!name && !id) return err('Provide name or id', 'e.g. {"name":"GraphDb"}');
+    const limit = Math.max(1, Math.min(Math.floor(Number(args.limit) || 5), 50));
+    const kinds = kind ? [kind as NodeKind] : undefined;
+    const needle = file ? file.split('\\').join('/') : undefined;
+    const inFile = (n: GraphNode): boolean => !needle || rel(root, n.filePath).includes(needle);
+
+    let matches: Array<{ node: GraphNode; matchedBy: string }> = [];
+    if (id) {
+      const n = db.getNode(expandId(root, id));
+      if (n) matches = [{ node: n, matchedBy: 'id' }];
+    } else if (name) {
+      matches = db
+        .getNodesByName(name, kinds)
+        .filter((n) => !n.isExternal && inFile(n))
+        .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind))
+        .map((node) => ({ node, matchedBy: 'exact' }));
+      if (matches.length === 0) {
+        const ranked = db.searchNodesRanked(name, { limit: 50, kinds });
+        const byId = new Map(db.getNodesByIds(ranked.map((r) => r.id)).map((n) => [n.id, n]));
+        for (const r of ranked) {
+          const n = byId.get(r.id);
+          if (n && inFile(n)) matches.push({ node: n, matchedBy: r.matchedBy });
+        }
+      }
+    }
+    if (matches.length === 0)
+      return err(`No symbol found for ${id ?? name}`, 'Try cgb_search with a partial name');
+
+    const items = matches.slice(0, limit).map(({ node, matchedBy }) => {
+      const c = compactNode(root, node);
+      const callers = uniqueNodes(engine.callers(node.id)?.callers ?? []);
+      const callees = uniqueNodes(engine.callees(node.id)?.callees ?? []);
+      let container: CompactNodeLike | undefined;
+      for (const e of db.getEdgesToByKind(node.id, 'contains')) {
+        const parent = db.getNode(e.fromId);
+        if (parent && parent.kind !== 'file') {
+          container = compactNode(root, parent);
+          break;
+        }
+      }
+      const readHint =
+        node.startLine !== undefined
+          ? `Read ${c.file} lines ${node.startLine}-${node.endLine ?? node.startLine}`
+          : `Read ${c.file}`;
+      return {
+        ...c,
+        matchedBy,
+        callers: callers.length,
+        callees: callees.length,
+        topCallers: callers.slice(0, TOP_N).map((n) => compactNode(root, n)),
+        topCallees: callees.slice(0, TOP_N).map((n) => compactNode(root, n)),
+        ...(container ? { container } : {}),
+        readHint,
+      };
+    });
+    return ok({
+      query: id ?? name,
+      total: matches.length,
+      returned: items.length,
+      truncated: matches.length > items.length,
+      items,
+    });
+  });
+}
+
+type CallRows = Array<{ node: GraphNode; reason: string }>;
+
+/** BFS over calls edges (callers or callees) with a visited set. */
+async function handleHops(
+  direction: 'callers' | 'callees',
+  args: RootArg & PageArgs & { id: string; depth?: number },
+) {
+  return withGraph(args, ({ root, engine }) => {
+    const id = expandId(root, String(args.id ?? ''));
+    const maxDepth = Math.max(1, Math.min(Math.floor(Number(args.depth) || 1), MAX_HOPS));
+    const rowsOf = (nodeId: string): { target: GraphNode; rows: CallRows } | null => {
+      if (direction === 'callers') {
+        const r = engine.callers(nodeId);
+        return r ? { target: r.target, rows: r.callers } : null;
+      }
+      const r = engine.callees(nodeId);
+      return r ? { target: r.target, rows: r.callees } : null;
+    };
+    const first = rowsOf(id);
+    if (!first) return err(`Node not found: ${args.id}`, 'Use cgb_symbol to find the node ID');
+
+    const visited = new Set<string>([id]);
+    const items: Array<CompactNodeLike & { depth: number; via: string }> = [];
+    let frontier: Array<{ id: string; name: string }> = [{ id, name: first.target.name }];
+    let capped = false;
+
+    for (let depth = 1; depth <= maxDepth && frontier.length > 0 && !capped; depth++) {
+      const next: Array<{ id: string; name: string }> = [];
+      for (const cur of frontier) {
+        const res = depth === 1 ? first : rowsOf(cur.id);
+        if (!res) continue;
+        for (const { node, reason } of res.rows) {
+          if (visited.has(node.id)) continue;
+          visited.add(node.id);
+          const rel2 = direction === 'callers' ? 'calls' : 'called by';
+          items.push({
+            ...compactNode(root, node),
+            depth,
+            via: depth === 1 ? reason : `${reason} (${rel2} ${cur.name})`,
+          });
+          next.push({ id: node.id, name: node.name });
+          if (items.length >= MAX_VISITED) {
+            capped = true;
+            break;
+          }
+        }
+        if (capped) break;
+      }
+      frontier = next;
     }
     return ok({
-      target: { id: result.target.id, name: result.target.name, filePath: result.target.filePath },
-      direct: result.direct.map((n) => ({
-        id: n.id,
-        name: n.name,
-        filePath: n.filePath,
-        isExternal: n.isExternal,
-        kind: n.kind,
-      })),
-      transitive: result.transitive.map((n) => ({
-        id: n.id,
-        name: n.name,
-        filePath: n.filePath,
-        isExternal: n.isExternal,
-        kind: n.kind,
-      })),
+      target: compactNode(root, first.target),
+      depth: maxDepth,
+      ...(capped ? { capped: true } : {}),
+      ...page(items, args),
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
-async function handleImpact(args: { root: string; target: string; depth?: number }) {
-  const { root, target, depth = 10 } = args;
-  const { db, engine } = await getServices(root);
-  try {
-    const absTarget = resolveTarget(root, target);
-    const nodeId = `file:${absTarget}`;
-    const result = engine.impact(nodeId, depth);
-    if (!result) {
-      return err(`File not found in graph: ${target}\nRun cgb_init first.`);
-    }
-    return ok({
-      target: { id: result.target.id, name: result.target.name, filePath: result.target.filePath },
-      affectedCount: result.affected.length,
-      affected: result.affected.map((a) => ({
-        depth: a.depth,
-        id: a.node.id,
-        name: a.node.name,
-        filePath: a.node.filePath,
-      })),
+async function handleBundle(
+  args: RootArg & {
+    target: string;
+    depth?: number;
+    includeSource?: boolean;
+    maxTargetLines?: number;
+    includeDependencySource?: boolean;
+  },
+) {
+  const {
+    target,
+    depth = 2,
+    includeSource = true,
+    maxTargetLines = 200,
+    includeDependencySource = false,
+  } = args;
+  return withGraph(args, ({ root, bundle }) => {
+    // Node ids ("function:src/a.ts#foo", "external_dep:...") pass through; file paths are resolved.
+    const isNodeId =
+      /^[a-z_]+:/.test(target) && (target.includes('#') || target.startsWith('external_dep:'));
+    const absTarget = isNodeId ? expandId(root, target) : resolveTarget(root, target);
+    const result = bundle.generate(absTarget, {
+      depth,
+      includeSource,
+      maxTargetLines,
+      includeDependencySource,
     });
-  } finally {
-    db.close();
-  }
-}
-
-async function handleSearch(args: { root: string; query: string }) {
-  const { root, query } = args;
-  const { db, engine } = await getServices(root);
-  try {
-    const results = engine.search(query);
     return ok({
-      query,
-      count: results.length,
-      results: results.slice(0, 30).map((n) => ({
-        id: n.id,
-        kind: n.kind,
-        name: n.name,
-        filePath: n.filePath,
-        isExternal: n.isExternal,
-        description: n.description,
-      })),
-    });
-  } finally {
-    db.close();
-  }
-}
-
-async function handleBundle(args: {
-  root: string;
-  target: string;
-  depth?: number;
-  includeSource?: boolean;
-}) {
-  const { root, target, depth = 2, includeSource = true } = args;
-  const { db, bundle } = await getServices(root);
-  try {
-    const absTarget = resolveTarget(root, target);
-    const result = bundle.generate(absTarget, { depth, includeSource });
-    const markdown = bundle.render(result);
-    return ok({
-      target: absTarget,
+      target: isNodeId ? absTarget : rel(root, absTarget),
       tokenEstimate: result.totalTokenEstimate,
-      bundle: markdown,
+      bundle: bundle.render(result),
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
-async function handleStats(args: { root: string }) {
-  const { root } = args;
-  const { db, engine } = await getServices(root);
-  try {
+async function handleStats(args: RootArg) {
+  return withGraph(args, ({ root, db, engine }) => {
     const stats = db.getStats();
-    const byKind = db.getNodeCountByKind();
-    const layers = engine.layers();
     const cycles = engine.detectCycles();
-    const orphans = engine.orphans();
     return ok({
       files: stats.files,
       nodes: stats.nodes,
       edges: stats.edges,
-      byKind,
-      layers: layers.slice(0, 20),
+      byKind: db.getNodeCountByKind(),
+      layers: engine.layers().slice(0, 20),
       cycleCount: cycles.length,
-      cycles: cycles.slice(0, 5),
-      orphanCount: orphans.length,
+      cycles: relPaths(root, cycles.slice(0, 5)),
+      orphanCount: engine.orphans().length,
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
-async function handlePath(args: { root: string; from: string; to: string }) {
-  const { root, from, to } = args;
-  const { db, engine } = await getServices(root);
-  try {
-    const absFrom = resolveTarget(root, from);
-    const absTo = resolveTarget(root, to);
-    const result = engine.path(`file:${absFrom}`, `file:${absTo}`);
-    if (!result) {
+async function handlePath(args: RootArg & { from: string; to: string }) {
+  const { from, to } = args;
+  return withGraph(args, ({ root, engine }) => {
+    const result = engine.path(
+      `file:${resolveTarget(root, from)}`,
+      `file:${resolveTarget(root, to)}`,
+    );
+    if (!result)
       return ok({
         found: false,
         from,
         to,
         message: `No dependency path found from ${from} to ${to}`,
       });
-    }
     return ok({
       found: true,
       length: result.path.length,
-      path: result.path.map((n) => ({ id: n.id, name: n.name, filePath: n.filePath })),
+      path: result.path.map((n) => compactNode(root, n)),
       edges: result.edges.map((e) => ({ kind: e.kind, reason: e.reason })),
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 // ─── Git tool handlers ────────────────────────────────────────────────────────
 
-async function handleDetectChanges(args: { root: string; base?: string }) {
-  const { root, base = 'HEAD~1' } = args;
-  if (!fs.existsSync(root)) {
-    return err(`Directory does not exist: ${root}`);
-  }
-
+async function handleDetectChanges(args: RootArg & { base?: string }) {
+  const { base = 'HEAD~1' } = args;
+  const root = resolveRoot(args);
+  if (!fs.existsSync(root)) return err(`Directory does not exist: ${root}`);
   const { getGitChanges, isGitRepo } = await import('../git/diff.js');
-  if (!isGitRepo(root)) {
-    return err(`Not a git repository: ${root}`);
-  }
+  if (!isGitRepo(root)) return err(`Not a git repository: ${root}`);
 
-  const { db, engine } = await getServices(root);
-  try {
+  return withGraph(args, async ({ db, engine }) => {
     const { analyzeChanges } = await import('../git/changes.js');
     const gitChanges = await getGitChanges(root, base);
-    if (gitChanges.length === 0) {
+    if (gitChanges.length === 0)
       return ok({ message: `No changes found between ${base} and HEAD`, changes: [] });
-    }
-    const analysis = analyzeChanges(gitChanges, db, engine);
-    return ok(analysis);
-  } finally {
-    db.close();
-  }
+    return ok(relPaths(root, analyzeChanges(gitChanges, db, engine)));
+  });
 }
 
-async function handleReviewContext(args: { root: string; base?: string; format?: 'json' | 'markdown' }) {
-  const { root, base = 'HEAD~1', format = 'markdown' } = args;
-  if (!fs.existsSync(root)) {
-    return err(`Directory does not exist: ${root}`);
-  }
-
+async function handleReviewContext(
+  args: RootArg & { base?: string; format?: 'json' | 'markdown' },
+) {
+  const { base = 'HEAD~1', format = 'markdown' } = args;
+  const root = resolveRoot(args);
+  if (!fs.existsSync(root)) return err(`Directory does not exist: ${root}`);
   const { isGitRepo } = await import('../git/diff.js');
-  if (!isGitRepo(root)) {
-    return err(`Not a git repository: ${root}`);
-  }
+  if (!isGitRepo(root)) return err(`Not a git repository: ${root}`);
 
-  const { db, engine } = await getServices(root);
-  try {
+  return withGraph(args, async ({ db, engine }) => {
     const { buildReviewContext, formatReviewContext } = await import('../git/review-context.js');
     const ctx = await buildReviewContext(root, db, engine, base);
-
-    if (format === 'json') {
-      return ok(ctx);
-    }
-
+    if (format === 'json') return ok(relPaths(root, ctx));
     return ok({ markdown: formatReviewContext(ctx), tokenEstimate: ctx.tokenEstimate });
-  } finally {
-    db.close();
-  }
+  });
 }
 
 // ─── Flows tool handlers ──────────────────────────────────────────────────────
 
-async function handleLargeFunctions(args: { root: string; limit?: number }) {
-  const { root, limit = 20 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleLargeFunctions(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db }) => {
     const { findLargeFunctions } = await import('../flows/index.js');
-    return ok(findLargeFunctions(db, limit));
-  } finally {
-    db.close();
-  }
+    return ok(relPaths(root, page(findLargeFunctions(db, ALL), args)));
+  });
 }
 
-async function handleEntryPoints(args: { root: string; limit?: number }) {
-  const { root, limit = 30 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleEntryPoints(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db }) => {
     const { FlowsAnalyzer } = await import('../flows/index.js');
-    const analyzer = new FlowsAnalyzer(db);
-    return ok(analyzer.entryPoints(limit));
-  } finally {
-    db.close();
-  }
+    return ok(relPaths(root, page(new FlowsAnalyzer(db).entryPoints(ALL), args)));
+  });
 }
 
-async function handleCallChain(args: { root: string; nodeId: string; maxDepth?: number }) {
-  const { root, nodeId, maxDepth = 5 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleCallChain(args: RootArg & PageArgs & { nodeId: string; maxDepth?: number }) {
+  const { nodeId, maxDepth = 5 } = args;
+  return withGraph(args, async ({ root, db }) => {
     const { FlowsAnalyzer } = await import('../flows/index.js');
-    const analyzer = new FlowsAnalyzer(db);
-    const chain = analyzer.callChain(nodeId, maxDepth);
+    const id = expandId(root, nodeId);
+    const chain = new FlowsAnalyzer(db).callChain(id, maxDepth);
     if (chain.length === 0) {
-      return err(`Node not found or no outbound calls: ${nodeId}`);
+      return err(
+        `Node not found or no outbound calls: ${nodeId}`,
+        'Use cgb_symbol to find the node ID',
+      );
     }
-    return ok({ nodeId, stepCount: chain.length, chain });
-  } finally {
-    db.close();
-  }
+    return ok({ nodeId: id, ...relPaths(root, page(chain, args)) });
+  });
 }
 
-async function handleCriticality(args: { root: string; limit?: number }) {
-  const { root, limit = 20 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleCriticality(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db }) => {
     const { FlowsAnalyzer } = await import('../flows/index.js');
-    const analyzer = new FlowsAnalyzer(db);
-    return ok(analyzer.criticalityScores(limit));
-  } finally {
-    db.close();
-  }
+    return ok(relPaths(root, page(new FlowsAnalyzer(db).criticalityScores(ALL), args)));
+  });
 }
 
 // ─── Community tool handlers ──────────────────────────────────────────────────
 
-async function handleCommunities(args: { root: string }) {
-  const { root } = args;
-  const { db, engine } = await getServices(root);
-  try {
+async function handleCommunities(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db, engine }) => {
     const { CommunityDetector } = await import('../communities/index.js');
+<<<<<<< working
+    // side effect: writes community_id onto nodes
+    const { communities } = new CommunityDetector(db, engine).detectAndPersistWithResult();
+    return ok(
+      page(
+        communities.map((c) => compactCommunity(root, c)),
+        args,
+      ),
+    );
+  });
+=======
     const detector = new CommunityDetector(db, engine);
+    if (mcpOptions.readOnly) {
+      return ok(detector.detect());
+    }
     const communities = detector.detectAndPersist();
     db.persist();
     return ok(communities);
   } finally {
     db.close();
   }
+>>>>>>> headless
 }
 
-async function handleArchitecture(args: { root: string }) {
-  const { root } = args;
-  const { db, engine } = await getServices(root);
-  try {
+async function handleArchitecture(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db, engine }) => {
     const { CommunityDetector } = await import('../communities/index.js');
-    const detector = new CommunityDetector(db, engine);
-    return ok(detector.overview());
-  } finally {
-    db.close();
-  }
+    const o = new CommunityDetector(db, engine).overview();
+    const { communities, cycles, orphans, ...rest } = o;
+    return ok({
+      ...relPaths(root, rest),
+      communities: page(
+        communities.map((c) => compactCommunity(root, c)),
+        args,
+      ),
+      cycleCount: cycles.length,
+      cycles: relPaths(root, cycles.slice(0, 20)),
+      orphanCount: orphans.length,
+      orphans: relPaths(root, orphans.slice(0, 20)),
+    });
+  });
 }
 
 // ─── Refactor tool handlers ───────────────────────────────────────────────────
 
-async function handleDeadCode(args: { root: string; limit?: number }) {
-  const { root, limit = 30 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleDeadCode(args: RootArg & PageArgs & { includeUnusedExports?: boolean }) {
+  return withGraph(args, async ({ root, db }) => {
     const { RefactorAnalyzer } = await import('../refactor/index.js');
     const analyzer = new RefactorAnalyzer(db);
-    return ok(analyzer.deadCode(limit));
-  } finally {
-    db.close();
-  }
+    const dead = page(analyzer.deadCode(ALL), args);
+    if (!args.includeUnusedExports) return ok(relPaths(root, dead));
+    return ok(relPaths(root, { ...dead, unusedExports: page(analyzer.unusedExports(ALL), args) }));
+  });
 }
 
-async function handleRenamePreview(args: { root: string; nodeId: string; newName?: string }) {
-  const { root, nodeId, newName } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleRenamePreview(args: RootArg & { nodeId: string; newName?: string }) {
+  const { nodeId, newName } = args;
+  return withGraph(args, async ({ root, db }) => {
     const { RefactorAnalyzer } = await import('../refactor/index.js');
     const analyzer = new RefactorAnalyzer(db);
-    if (newName) {
-      const preview = analyzer.renamePreviewWithEdits(nodeId, newName);
-      if (!preview) {
-        return err(`Node not found: ${nodeId}\nUse cgb_search to find the correct node ID.`);
-      }
-      return ok(preview);
+    const id = expandId(root, nodeId);
+    let preview;
+    try {
+      preview = newName ? analyzer.renamePreviewWithEdits(id, newName) : analyzer.renamePreview(id);
+    } catch (e) {
+      return err(e instanceof Error ? e.message : String(e), 'newName must be a valid identifier');
     }
-    const preview = analyzer.renamePreview(nodeId);
-    if (!preview) {
-      return err(`Node not found: ${nodeId}\nUse cgb_search to find the correct node ID.`);
-    }
-    return ok(preview);
-  } finally {
-    db.close();
-  }
+    if (!preview)
+      return err(`Node not found: ${nodeId}`, 'Use cgb_symbol to find the correct node ID');
+    return ok(relPaths(root, preview));
+  });
 }
 
-async function handleApplyRefactor(args: { root: string; refactorId: string }) {
-  const { root, refactorId } = args;
-  const { applyRefactor } = await import('../refactor/index.js');
-  return ok(applyRefactor(refactorId, root));
+async function handleApplyRefactor(args: RootArg & { refactorId: string }) {
+  const { applyRefactorAsync } = await import('../refactor/index.js');
+  return withGraph(
+    args,
+    async ({ root, db }) => {
+      const result = await applyRefactorAsync(args.refactorId, root, db);
+      return ok(relPaths(root, result));
+    },
+    false,
+    false,
+  );
 }
 
-async function handleRefactorSuggest(args: { root: string; limit?: number }) {
-  const { root, limit = 10 } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleRefactorSuggest(args: RootArg & PageArgs) {
+  return withGraph(args, async ({ root, db }) => {
     const { RefactorAnalyzer } = await import('../refactor/index.js');
-    const analyzer = new RefactorAnalyzer(db);
-    return ok(analyzer.suggestions(limit));
-  } finally {
-    db.close();
-  }
+    return ok(relPaths(root, page(new RefactorAnalyzer(db).suggestions(ALL), args)));
+  });
 }
 
 // ─── Wiki tool handlers ───────────────────────────────────────────────────────
 
-async function handleWikiGenerate(args: { root: string; outputDir?: string }) {
-  const { root, outputDir } = args;
-  const { db, engine } = await getServices(root);
-  try {
+async function handleWikiGenerate(args: RootArg & PageArgs & { outputDir?: string }) {
+  const { outputDir } = args;
+  return withGraph(args, async ({ root, db, engine }) => {
     const { CommunityDetector } = await import('../communities/index.js');
     const { WikiGenerator } = await import('../wiki/index.js');
-    const detector = new CommunityDetector(db, engine);
-    const generator = new WikiGenerator(db, detector);
+    const generator = new WikiGenerator(db, new CommunityDetector(db, engine));
 
     if (outputDir) {
       const absOut = path.isAbsolute(outputDir) ? outputDir : path.resolve(root, outputDir);
       const written = generator.writeToDir(absOut);
-      return ok({ outputDir: absOut, writtenFiles: written.length, files: written });
+      return ok({
+        outputDir: rel(root, absOut),
+        writtenFiles: written.length,
+        files: relPaths(root, written),
+      });
     }
 
     const result = generator.generate();
     return ok({
       totalPages: result.totalPages,
       indexPage: result.indexPage,
-      pages: result.pages.map((p) => ({ title: p.title, slug: p.slug, communityId: p.communityId, chars: p.content.length })),
+      ...page(
+        result.pages.map((p) => ({
+          title: p.title,
+          slug: p.slug,
+          communityId: p.communityId,
+          chars: p.content.length,
+        })),
+        args,
+      ),
     });
-  } finally {
-    db.close();
-  }
+  });
 }
 
-async function handleWikiSection(args: { root: string; communityIndex: number }) {
-  const { root, communityIndex } = args;
-  const { db, engine } = await getServices(root);
-  try {
+async function handleWikiSection(args: RootArg & { communityIndex: number }) {
+  const { communityIndex } = args;
+  return withGraph(args, async ({ db, engine }) => {
     const { CommunityDetector } = await import('../communities/index.js');
     const { WikiGenerator } = await import('../wiki/index.js');
     const detector = new CommunityDetector(db, engine);
     const communities = detector.detect();
-
     if (communityIndex < 0 || communityIndex >= communities.length) {
-      return err(`communityIndex ${communityIndex} out of range. There are ${communities.length} communities (0-based).`);
+      return err(
+        `communityIndex ${communityIndex} out of range. There are ${communities.length} communities (0-based).`,
+        'Call cgb_communities to list them',
+      );
     }
-
-    const generator = new WikiGenerator(db, detector);
-    const result = generator.generate();
-    const page = result.pages[communityIndex];
-
-    if (!page) {
-      return err(`No wiki page generated for community index ${communityIndex}.`);
-    }
-
-    return ok(page);
-  } finally {
-    db.close();
-  }
+    const wikiPage = new WikiGenerator(db, detector).generate().pages[communityIndex];
+    if (!wikiPage) return err(`No wiki page generated for community index ${communityIndex}.`);
+    return ok(wikiPage);
+  });
 }
 
 // ─── Registry tool handlers ───────────────────────────────────────────────────
 
-async function handleRegistryRegister(args: { root: string; name?: string }) {
-  const { root, name = '' } = args;
-  if (!fs.existsSync(root)) {
-    return err(`Directory does not exist: ${root}`);
-  }
+async function handleRegistryRegister(args: RootArg & { name?: string }) {
+  const root = resolveRoot(args);
+  if (!fs.existsSync(root)) return err(`Directory does not exist: ${root}`);
   const { RegistryManager } = await import('../registry/index.js');
-  const registry = new RegistryManager();
-  const entry = registry.register(name, root);
-  return ok({ registered: entry });
+  return ok({ registered: new RegistryManager().register(args.name ?? '', root) });
 }
 
-async function handleRegistryList() {
+async function handleRegistryList(args: PageArgs) {
   const { RegistryManager } = await import('../registry/index.js');
-  const registry = new RegistryManager();
+<<<<<<< working
+  return ok(page(new RegistryManager().load(), args));
+=======
+  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
   const entries = registry.load();
   return ok({ count: entries.length, repos: entries });
+>>>>>>> headless
 }
 
-async function handleRegistrySearch(args: { query: string; maxPerRepo?: number }) {
-  const { query, maxPerRepo = 10 } = args;
+async function handleRegistrySearch(args: PageArgs & { query: string; maxPerRepo?: number }) {
   const { RegistryManager } = await import('../registry/index.js');
-  const registry = new RegistryManager();
-  const results = await registry.search(query, maxPerRepo);
+<<<<<<< working
+  const results = await new RegistryManager().search(args.query, args.maxPerRepo ?? 10);
+  return ok({ query: args.query, ...page(results, args) });
+=======
+  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
+  const results = await registry.search(query, maxPerRepo, mcpOptions.readOnly);
   return ok({ query, count: results.length, results });
+>>>>>>> headless
 }
 
 // ─── Embed handlers ───────────────────────────────────────────────────────────
 
-async function handleEmbedBuild(args: { root: string; provider?: string }) {
-  const { root, provider = 'local' } = args;
-  const { db } = await getServices(root);
-  try {
+async function handleEmbedBuild(args: RootArg & { provider?: string }) {
+  const { provider = 'local' } = args;
+  return withGraph(args, async ({ db }) => {
     const { embedNodes, getProvider } = await import('../embed/index.js');
-    const p = getProvider(provider);
-    const result = await embedNodes(db, p);
-    db.persist();
+    const result = await embedNodes(db, getProvider(provider));
     return ok({ provider, ...result });
-  } finally {
-    db.close();
-  }
+  });
 }
 
+<<<<<<< working
+async function handleEmbedSimilar(args: RootArg & PageArgs & { nodeId: string }) {
+  return withGraph(args, async ({ root, db }) => {
+    const { EmbedSearcher } = await import('../embed/index.js');
+    const id = expandId(root, args.nodeId);
+    const results = new EmbedSearcher(db).findSimilar(id, 500);
+    return ok({ nodeId: id, ...relPaths(root, page(results, args)) });
+  });
+}
+
+// ─── Dispatch ─────────────────────────────────────────────────────────────────
+
+/** Run a tool by name. Exported for tests; the MCP CallTool handler delegates here. */
+export async function handleTool(
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<ToolResult> {
+  try {
+    switch (name) {
+      case 'cgb_init':
+        return await handleInit(args as never);
+      case 'cgb_deps':
+        return await handleDeps(args as never);
+      case 'cgb_impact':
+        return await handleImpact(args as never);
+      case 'cgb_symbol':
+        return await handleSymbol(args as never);
+      case 'cgb_callers':
+        return await handleHops('callers', args as never);
+      case 'cgb_callees':
+        return await handleHops('callees', args as never);
+      case 'cgb_search':
+        return await handleSearch(args as never);
+      case 'cgb_bundle':
+        return await handleBundle(args as never);
+      case 'cgb_stats':
+        return await handleStats(args as never);
+      case 'cgb_path':
+        return await handlePath(args as never);
+      case 'cgb_detect_changes':
+        return await handleDetectChanges(args as never);
+      case 'cgb_review_context':
+        return await handleReviewContext(args as never);
+      case 'cgb_large_functions':
+        return await handleLargeFunctions(args as never);
+      case 'cgb_entry_points':
+        return await handleEntryPoints(args as never);
+      case 'cgb_call_chain':
+        return await handleCallChain(args as never);
+      case 'cgb_criticality':
+        return await handleCriticality(args as never);
+      case 'cgb_communities':
+        return await handleCommunities(args as never);
+      case 'cgb_architecture':
+        return await handleArchitecture(args as never);
+      case 'cgb_dead_code':
+        return await handleDeadCode(args as never);
+      case 'cgb_rename_preview':
+        return await handleRenamePreview(args as never);
+      case 'cgb_apply_refactor':
+        return await handleApplyRefactor(args as never);
+      case 'cgb_refactor_suggest':
+        return await handleRefactorSuggest(args as never);
+      case 'cgb_wiki_generate':
+        return await handleWikiGenerate(args as never);
+      case 'cgb_wiki_section':
+        return await handleWikiSection(args as never);
+      case 'cgb_registry_register':
+        return await handleRegistryRegister(args as never);
+      case 'cgb_registry_list':
+        return await handleRegistryList(args as never);
+      case 'cgb_registry_search':
+        return await handleRegistrySearch(args as never);
+      case 'cgb_embed_build':
+        return await handleEmbedBuild(args as never);
+      case 'cgb_embed_search': // deprecated alias of cgb_search
+        return await handleSearch(args as never);
+      case 'cgb_embed_similar':
+        return await handleEmbedSimilar(args as never);
+      default:
+        return err(`Unknown tool: ${name}`);
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return err(`Tool ${name} failed: ${message}`);
+=======
 async function handleEmbedSearch(args: {
   root: string;
   query: string;
@@ -986,7 +1275,7 @@ async function handleEmbedSearch(args: {
   const { db } = await getServices(root);
   try {
     const { hybridSearch } = await import('../embed/index.js');
-    const results = await hybridSearch(db, query, { limit, contextFiles });
+    const results = await hybridSearch(db, query, { limit, contextFiles, localOnly: mcpOptions.readOnly });
     return ok({ query, count: results.length, results });
   } finally {
     db.close();
@@ -996,10 +1285,15 @@ async function handleEmbedSearch(args: {
 async function handleEmbedSimilar(args: { root: string; nodeId: string; limit?: number }) {
   const { root, nodeId, limit = 10 } = args;
   const { db } = await getServices(root);
-  const { EmbedSearcher } = await import('../embed/index.js');
-  const searcher = new EmbedSearcher(db);
-  const results = searcher.findSimilar(nodeId, limit);
-  return ok({ nodeId, count: results.length, results });
+  try {
+    const { EmbedSearcher } = await import('../embed/index.js');
+    const searcher = new EmbedSearcher(db);
+    const results = searcher.findSimilar(nodeId, limit);
+    return ok({ nodeId, count: results.length, results });
+  } finally {
+    db.close();
+>>>>>>> headless
+  }
 }
 
 // ─── Prompt definitions ───────────────────────────────────────────────────────
@@ -1011,8 +1305,16 @@ const PROMPTS = [
       'Generates a focused code-review prompt for the current git diff. ' +
       'Pass root so the agent can call cgb_review_context automatically.',
     arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
-      { name: 'base', description: 'Base git ref to diff against (default: main)', required: false },
+      {
+        name: 'root',
+        description: 'Absolute project root (default: CGB_ROOT or server cwd)',
+        required: false,
+      },
+      {
+        name: 'base',
+        description: 'Base git ref to diff against (default: main)',
+        required: false,
+      },
     ],
   },
   {
@@ -1021,7 +1323,11 @@ const PROMPTS = [
       'Produces a prompt that asks the agent to describe the high-level architecture ' +
       'of the project using cgb_architecture and cgb_communities.',
     arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
+      {
+        name: 'root',
+        description: 'Absolute project root (default: CGB_ROOT or server cwd)',
+        required: false,
+      },
     ],
   },
   {
@@ -1030,9 +1336,21 @@ const PROMPTS = [
       'Scaffolds a debugging prompt: given a symptom, the agent traces call chains, ' +
       'checks dependencies, and proposes root-cause hypotheses.',
     arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
-      { name: 'symptom', description: 'Short description of the observed bug or failure', required: true },
-      { name: 'entry', description: 'File or function name that is the suspected entry point', required: false },
+      {
+        name: 'root',
+        description: 'Absolute project root (default: CGB_ROOT or server cwd)',
+        required: false,
+      },
+      {
+        name: 'symptom',
+        description: 'Short description of the observed bug or failure',
+        required: true,
+      },
+      {
+        name: 'entry',
+        description: 'File or function name that is the suspected entry point',
+        required: false,
+      },
     ],
   },
   {
@@ -1041,7 +1359,11 @@ const PROMPTS = [
       'Creates an onboarding prompt that walks a new developer through the codebase: ' +
       'architecture overview, key entry points, communities, and top-level wiki.',
     arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
+      {
+        name: 'root',
+        description: 'Absolute project root (default: CGB_ROOT or server cwd)',
+        required: false,
+      },
     ],
   },
   {
@@ -1050,7 +1372,11 @@ const PROMPTS = [
       'Generates a pre-merge checklist prompt: detects changes, scores risk, ' +
       'checks for dead code, and summarises impact for a human reviewer.',
     arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
+      {
+        name: 'root',
+        description: 'Absolute project root (default: CGB_ROOT or server cwd)',
+        required: false,
+      },
       { name: 'base', description: 'Base git ref (default: main)', required: false },
     ],
   },
@@ -1104,7 +1430,7 @@ function buildOnboardDeveloperPrompt(root: string): string {
     '',
     'Please produce a concise onboarding guide by following these steps:',
     '',
-    '**Step 1** — Call `cgb_stats` for a bird\'s-eye view (file count, node count, edge count).',
+    "**Step 1** — Call `cgb_stats` for a bird's-eye view (file count, node count, edge count).",
     '**Step 2** — Call `cgb_architecture` to explain the layer structure.',
     '**Step 3** — Call `cgb_communities` to describe the major module clusters.',
     '**Step 4** — Call `cgb_entry_points` to list the main public entry points a developer will interact with.',
@@ -1120,7 +1446,7 @@ function buildPreMergeCheckPrompt(root: string, base: string): string {
     '',
     '**Step 1** — Call `cgb_detect_changes` to list all modified files and their risk scores.',
     '**Step 2** — Call `cgb_review_context` to get the full review summary.',
-    '**Step 3** — For every file with risk > 0.7, call `cgb_impact` to enumerate affected downstream consumers.',
+    '**Step 3** — For every file with risk > 70, call `cgb_impact` to enumerate affected downstream consumers.',
     '**Step 4** — Call `cgb_dead_code` to ensure no dead code is being introduced.',
     '**Step 5** — Call `cgb_refactor_suggest` to flag any structural issues introduced by the changes.',
     '',
@@ -1130,59 +1456,89 @@ function buildPreMergeCheckPrompt(root: string, base: string): string {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
+<<<<<<< working
 export async function startMcpServer(): Promise<void> {
-  const server = new Server({ name: 'cgb', version: '1.0.0' }, { capabilities: { tools: {}, prompts: {} } });
+  const server = new Server(
+    { name: 'cgb', version: VERSION },
+    { capabilities: { tools: {}, prompts: {} } },
+  );
 
-  // List available tools
+  // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-  // List available prompts
+  // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
 
-  // Resolve a prompt by name
+  // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: pArgs = {} } = request.params;
-    const root: string = (pArgs['root'] as string) ?? '';
-    const base: string = (pArgs['base'] as string) ?? 'main';
+    const root = resolveRoot({ root: pArgs['root'] as string | undefined });
+    const base: string = pArgs['base'] ?? 'main';
 
     switch (name) {
       case 'review_changes':
         return {
           description: 'Code-review prompt with cgb context',
-          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } },
+          ],
         };
       case 'architecture_map':
         return {
           description: 'Architecture mapping prompt',
-          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } },
+          ],
         };
       case 'debug_issue': {
-        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
+        const symptom: string = pArgs['symptom'] ?? 'unknown error';
         const entry: string | undefined = pArgs['entry'] as string | undefined;
         return {
           description: 'Debugging prompt with call-chain tracing',
-          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) },
+            },
+          ],
         };
       }
       case 'onboard_developer':
         return {
           description: 'Developer onboarding guide',
-          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } },
+          ],
         };
       case 'pre_merge_check':
         return {
           description: 'Pre-merge quality checklist',
-          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } },
+          ],
         };
       default:
         throw new Error(`Unknown prompt: ${name}`);
     }
   });
 
-  // Handle tool calls
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
-
+    return handleTool(name, args);
+=======
+/** Dispatch a tool call under the given options. Exported for tests and embedding. */
+export async function callTool(
+  name: string,
+  rawArgs: Record<string, unknown>,
+  options: McpServerOptions = mcpOptions,
+) {
+  const previous = mcpOptions;
+  mcpOptions = options;
+  try {
+    if (options.readOnly && !READ_ONLY_TOOLS.includes(name)) {
+      return err(`Tool ${name} is not available in read-only mode.`);
+    }
+    const args: Record<string, unknown> = { ...rawArgs };
+    if (args['root'] === undefined && options.root) args['root'] = options.root;
     try {
       switch (name) {
         case 'cgb_init':
@@ -1252,12 +1608,92 @@ export async function startMcpServer(): Promise<void> {
       const message = e instanceof Error ? e.message : String(e);
       return err(`Tool ${name} failed: ${message}`);
     }
+  } finally {
+    mcpOptions = previous;
+  }
+}
+
+/** Tool definitions served under the given options (read-only mode filters out mutating tools). */
+export function listTools(options: McpServerOptions = {}) {
+  if (!options.readOnly) return TOOLS;
+  const allowed = new Set(READ_ONLY_TOOLS);
+  return TOOLS.filter((t) => allowed.has(t.name)).map((t) => ({
+    ...t,
+    inputSchema: {
+      ...t.inputSchema,
+      // `root` can come from --root in read-only mode
+      required: options.root
+        ? (t.inputSchema as { required?: string[] }).required?.filter((r) => r !== 'root')
+        : (t.inputSchema as { required?: string[] }).required,
+    },
+  }));
+}
+
+export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
+  mcpOptions = {
+    ...options,
+    root: options.root ? path.resolve(options.root) : undefined,
+    dbDir: options.dbDir ? path.resolve(options.dbDir) : undefined,
+  };
+  const server = new Server({ name: 'cgb', version: '1.2.0' }, { capabilities: { tools: {}, prompts: {} } });
+
+  // List available tools
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(mcpOptions) }));
+
+  // List available prompts (prompts reference mutating tools, so none are served read-only)
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: mcpOptions.readOnly ? [] : PROMPTS,
+  }));
+
+  // Resolve a prompt by name
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: pArgs = {} } = request.params;
+    const root: string = (pArgs['root'] as string) ?? '';
+    const base: string = (pArgs['base'] as string) ?? 'main';
+
+    switch (name) {
+      case 'review_changes':
+        return {
+          description: 'Code-review prompt with cgb context',
+          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
+        };
+      case 'architecture_map':
+        return {
+          description: 'Architecture mapping prompt',
+          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
+        };
+      case 'debug_issue': {
+        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
+        const entry: string | undefined = pArgs['entry'] as string | undefined;
+        return {
+          description: 'Debugging prompt with call-chain tracing',
+          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
+        };
+      }
+      case 'onboard_developer':
+        return {
+          description: 'Developer onboarding guide',
+          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
+        };
+      case 'pre_merge_check':
+        return {
+          description: 'Pre-merge quality checklist',
+          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
+        };
+      default:
+        throw new Error(`Unknown prompt: ${name}`);
+    }
   });
 
-  // Connect via stdio
+  // Handle tool calls
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args = {} } = request.params;
+    return callTool(name, args as Record<string, unknown>, mcpOptions);
+>>>>>>> headless
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Keep running until stdin closes
   process.on('SIGINT', () => process.exit(0));
 }

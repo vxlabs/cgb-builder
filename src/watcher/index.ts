@@ -17,24 +17,39 @@ export interface WatcherOptions {
   onUpdate?: (result: { parsed: number; errors: number; files: string[] }) => void;
   /** Called when the watcher encounters an error */
   onError?: (err: Error) => void;
-  /** Extra glob patterns to ignore (in addition to built-in defaults) */
+  /** Extra regex sources to ignore, matched against the repo-relative path */
   extraIgnores?: string[];
 }
 
-const DEFAULT_IGNORES: (string | RegExp)[] = [
-  /(^|[/\\])\../, // dotfiles
-  /node_modules/,
-  /dist/,
-  /build/,
-  /bin/,
-  /obj/,
-  /coverage/,
-  /\.cgb/,
-  /__pycache__/,
-  /vendor/,
+// Patterns are matched against the repo-relative, forward-slash path and are segment-anchored,
+// so a parent directory such as "code_graph_builder" never triggers the "build" rule.
+const IGNORE_DIRS = [
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  'bin',
+  'obj',
+  '.cgb',
+  'coverage',
+  '__pycache__',
+  'vendor',
+];
+const DEFAULT_IGNORES: RegExp[] = [
+  /(^|\/)\.[^/]/, // dotfiles / dot-directories (e.g. .idea)
+  ...IGNORE_DIRS.map((d) => new RegExp(`(^|/)${d.replace(/[.]/g, '\\.')}(/|$)`)),
   /\.min\.js$/,
   /\.d\.ts$/,
 ];
+
+/** True when absPath (under root) should be ignored by the watcher. */
+export function shouldIgnore(root: string, absPath: string, extra: RegExp[] = []): boolean {
+  const rel = path.relative(root, absPath).split(path.sep).join('/');
+  if (rel === '') return false; // the root itself
+  if (rel.startsWith('..')) return true; // outside the root
+  return DEFAULT_IGNORES.some((re) => re.test(rel)) || extra.some((re) => re.test(rel));
+}
 
 export class Watcher {
   private watcher: chokidar.FSWatcher | null = null;
@@ -51,7 +66,9 @@ export class Watcher {
   start(): void {
     if (this.watcher) return;
 
-    const ignored = [...DEFAULT_IGNORES, ...(this.options.extraIgnores ?? [])];
+    const extra = (this.options.extraIgnores ?? []).map((g) => new RegExp(g));
+    const root = this.projectRoot;
+    const ignored = (p: string): boolean => shouldIgnore(root, path.resolve(p), extra);
 
     this.watcher = chokidar.watch(this.projectRoot, {
       ignored,

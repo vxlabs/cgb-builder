@@ -12,7 +12,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 
 export class GoAdapter implements LanguageAdapter {
@@ -20,6 +28,7 @@ export class GoAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'go');
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -28,6 +37,8 @@ export class GoAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `Go source file: ${path.basename(filePath)}`,
@@ -41,6 +52,30 @@ export class GoAdapter implements LanguageAdapter {
     this.extractFunctions(tree.rootNode, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'go', nodes, edges };
+  }
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    const name = node.childForFieldName('name')?.text ?? '';
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(
+        node.type === 'type_spec' && node.parent?.type === 'type_declaration' ? node.parent : node,
+        this.src,
+        'slash',
+      ),
+      exported: /^[A-Z]/.test(name),
+    };
   }
 
   private extractImports(
@@ -111,6 +146,7 @@ export class GoAdapter implements LanguageAdapter {
           name: typeName,
           filePath,
           description: `${isInterface ? 'Interface' : 'Struct'} ${typeName}. ${snippet}`,
+          ...this.meta(spec),
           isExternal: false,
           language: 'go',
           meta: '{}',
@@ -151,6 +187,7 @@ export class GoAdapter implements LanguageAdapter {
         name: fnName,
         filePath,
         description: `${kind === 'method' ? 'Method' : 'Function'} ${fnName} in ${path.basename(filePath)}`,
+        ...this.meta(node),
         isExternal: false,
         language: 'go',
         meta: '{}',
@@ -174,6 +211,7 @@ export class GoAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (types.includes(cur.type)) results.push(cur);
       for (const child of cur.children) stack.push(child);

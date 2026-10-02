@@ -12,7 +12,15 @@ import * as path from 'path';
 import type Parser from 'web-tree-sitter';
 import { treeSitterEngine } from '../tree-sitter-engine.js';
 import type { LanguageAdapter } from '../adapter.js';
-import { makeNodeId, makeEdgeId, fileDisplayName, truncate } from '../utils.js';
+import {
+  makeNodeId,
+  makeEdgeId,
+  fileDisplayName,
+  truncate,
+  nodeRange,
+  oneLine,
+  leadingDocComment,
+} from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 
 export class JavaAdapter implements LanguageAdapter {
@@ -20,6 +28,7 @@ export class JavaAdapter implements LanguageAdapter {
 
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'java');
+    this.src = source;
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
     const edges: Omit<GraphEdge, 'updatedAt'>[] = [];
@@ -28,6 +37,8 @@ export class JavaAdapter implements LanguageAdapter {
     nodes.push({
       id: fileNodeId,
       kind: 'file',
+      startLine: 1,
+      endLine: source.replace(/\r?\n$/, '').split(/\r?\n/).length,
       name: fileDisplayName(filePath),
       filePath,
       description: `Java source file: ${path.basename(filePath)}`,
@@ -42,6 +53,25 @@ export class JavaAdapter implements LanguageAdapter {
     this.extractMethods(tree.rootNode, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'java', nodes, edges };
+  }
+
+  private src = '';
+
+  /** Line range, signature, doc comment and export flag for a declaration node. */
+  private meta(
+    node: Parser.SyntaxNode,
+  ): Pick<GraphNode, 'startLine' | 'endLine' | 'signature' | 'doc' | 'exported'> {
+    const body =
+      node.childForFieldName('body') ?? node.namedChildren.find((c) => /body|block/.test(c.type));
+    const header = body
+      ? this.src.slice(node.startIndex, body.startIndex)
+      : ((node.text.split('{')[0] ?? '').split(/\r?\n/)[0] ?? '');
+    return {
+      ...nodeRange(node),
+      signature: oneLine(header.replace(/[{:;=]+$/, '').trim()),
+      doc: leadingDocComment(node, this.src, 'slash'),
+      exported: node.children.some((c) => c.type === 'modifiers' && /public/.test(c.text)),
+    };
   }
 
   private extractImports(
@@ -107,6 +137,7 @@ export class JavaAdapter implements LanguageAdapter {
         name: className,
         filePath,
         description: `Class ${className}. ${snippet}`,
+        ...this.meta(node),
         isExternal: false,
         language: 'java',
         meta: JSON.stringify({ isEnum: node.type === 'enum_declaration' }),
@@ -172,6 +203,7 @@ export class JavaAdapter implements LanguageAdapter {
         name: ifaceName,
         filePath,
         description: `Interface ${ifaceName}`,
+        ...this.meta(node),
         isExternal: false,
         language: 'java',
         meta: '{}',
@@ -209,6 +241,7 @@ export class JavaAdapter implements LanguageAdapter {
         name: methodName,
         filePath,
         description: `Method ${methodName} in ${path.basename(filePath)}`,
+        ...this.meta(node),
         isExternal: false,
         language: 'java',
         meta: '{}',
@@ -232,6 +265,7 @@ export class JavaAdapter implements LanguageAdapter {
     const results: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [node];
     while (stack.length) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       const cur = stack.pop()!;
       if (types.includes(cur.type)) results.push(cur);
       for (const child of cur.children) stack.push(child);

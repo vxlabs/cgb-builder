@@ -29,11 +29,19 @@ const LANG_WASM_NAMES: Record<SupportedLanguage, string> = {
   kotlin: 'tree-sitter-kotlin.wasm',
 };
 
+/** Grammar key: a supported language, or 'tsx' (TypeScript + JSX; internal only). */
+export type GrammarKey = SupportedLanguage | 'tsx';
+
+const GRAMMAR_WASM_NAMES: Record<GrammarKey, string> = {
+  ...LANG_WASM_NAMES,
+  tsx: 'tree-sitter-tsx.wasm',
+};
+
 // ─── TreeSitterEngine ─────────────────────────────────────────────────────────
 
 export class TreeSitterEngine {
   private parser!: Parser;
-  private languageCache = new Map<SupportedLanguage, Parser.Language>();
+  private languageCache = new Map<GrammarKey, Parser.Language>();
   private initialised = false;
 
   async init(): Promise<void> {
@@ -45,7 +53,7 @@ export class TreeSitterEngine {
   }
 
   /** Parse source text in the given language and return a tree-sitter Tree */
-  async parse(source: string, language: SupportedLanguage): Promise<Parser.Tree> {
+  async parse(source: string, language: GrammarKey): Promise<Parser.Tree> {
     await this.init();
     const lang = await this.loadLanguage(language);
     this.parser.setLanguage(lang);
@@ -53,11 +61,12 @@ export class TreeSitterEngine {
   }
 
   /** Return the tree-sitter Language object (cached) */
-  async loadLanguage(language: SupportedLanguage): Promise<Parser.Language> {
+  async loadLanguage(language: GrammarKey): Promise<Parser.Language> {
     if (this.languageCache.has(language)) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
       return this.languageCache.get(language)!;
     }
-    const wasmFile = LANG_WASM_NAMES[language];
+    const wasmFile = GRAMMAR_WASM_NAMES[language];
     const wasmPath = path.join(WASM_DIR, wasmFile);
     if (!fs.existsSync(wasmPath)) {
       throw new Error(`WASM grammar not found for ${language}: ${wasmPath}`);

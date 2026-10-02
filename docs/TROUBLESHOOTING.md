@@ -95,6 +95,32 @@ If that fails, ensure you have a C++ compiler installed:
 - **macOS:** `xcode-select --install`
 - **Linux:** `apt install build-essential`
 
+#### Native module install (better-sqlite3)
+
+CGB stores its graph with `better-sqlite3`, a native module. `npm install` normally downloads a
+prebuilt binary for Node 20/22 on Windows, macOS and Linux. If no prebuild matches your
+platform or Node version, npm falls back to a source build, which needs a C++ toolchain:
+
+- **Windows:** install Visual Studio Build Tools ("Desktop development with C++") and Python 3.
+  If the wrong toolset is picked, set `npm config set msvs_version 2022` (or your installed
+  version) and re-run `npm install`.
+- Use Node >= 20 (an unsupported Node version is the most common cause of a missing prebuild).
+- After switching Node versions run `npm rebuild better-sqlite3`.
+- An old `.cgb/graph.db` written by a pre-1.3 (sql.js) build is detected and rebuilt
+  automatically; re-run `cgb init` afterwards.
+
+---
+
+### Viz server not reachable from another machine
+
+`cgb viz` listens on `127.0.0.1` only by default. To expose it on another interface (for example in a container), set `CGB_VIZ_HOST`, e.g. `CGB_VIZ_HOST=0.0.0.0 cgb viz`. Only do this on a trusted network; the viz has no authentication.
+
+---
+
+### detect-changes shows files I did not commit
+
+`detect-changes` (and the MCP change tools) now include uncommitted work. With no `--base`, the diff is the working tree against `HEAD` (staged and unstaged changes) plus untracked files, which count as fully added. With a base, `base..HEAD` is merged with working-tree changes. Ignored files (`.gitignore`) are excluded.
+
 ---
 
 ### Changes not reflected after edit

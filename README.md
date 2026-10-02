@@ -318,16 +318,16 @@ Options:
 
 ## MCP Server (Cursor / Claude Code Integration)
 
-`cgb-builder` ships a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 26 graph tools to your AI coding assistant.
+`cgb-builder` ships a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes 30 graph tools to your AI coding assistant.
 
 ### Quick setup
 
 ```bash
 # Claude Code
-cgb install claude
+cgb install --platform claude-code
 
 # Cursor
-cgb install cursor
+cgb install --platform cursor
 ```
 
 Or configure manually:
@@ -346,46 +346,35 @@ Or configure manually:
 }
 ```
 
-**Claude Code** (global):
+**Claude Code** (`.mcp.json`):
 
 ```bash
-claude mcp add cgb -- cgb mcp
+cgb install --platform claude-code
 ```
 
-### Available MCP Tools (26 tools)
+### Available MCP Tools (30 tools)
 
-| Tool                    | Description                                                                 |
-|-------------------------|-----------------------------------------------------------------------------|
-| `cgb_init`              | Scan a project and build/refresh the code graph                            |
-| `cgb_deps`              | Get dependencies of a file (direct + transitive)                           |
-| `cgb_impact`            | Which files would be affected if a given file changes                      |
-| `cgb_search`            | Search nodes by name, description, or file path                            |
-| `cgb_bundle`            | Generate a compact AI context bundle (Markdown, ~1 000–5 000 tokens)       |
-| `cgb_stats`             | Graph statistics: counts, cycles, layers                                   |
-| `cgb_path`              | Shortest dependency path between two files                                 |
-| `cgb_detect_changes`    | Detect git changes with risk scoring and blast-radius analysis             |
-| `cgb_review_context`    | Build a focused AI code-review context (changed files, risk, tests)        |
-| `cgb_large_functions`   | Find large / complex functions ranked by connectivity                      |
-| `cgb_entry_points`      | Discover call-chain entry points in the graph                              |
-| `cgb_call_chain`        | Trace a full call chain from any node                                      |
-| `cgb_criticality`       | Score every node by criticality (fan-in, fan-out, centrality)              |
-| `cgb_communities`       | Detect communities / module clusters using Louvain algorithm               |
-| `cgb_architecture`      | Generate a high-level architecture overview of the project                 |
-| `cgb_dead_code`         | Detect unreachable / dead code (zero inbound references)                   |
-| `cgb_rename_preview`    | Preview the full impact of renaming a symbol before applying               |
-| `cgb_apply_refactor`    | Apply a stored rename preview to disk                                      |
-| `cgb_refactor_suggest`  | Suggest structural refactoring opportunities                               |
-| `cgb_wiki_generate`     | Generate a complete Markdown wiki from graph communities                   |
-| `cgb_wiki_section`      | Generate a wiki section for a single community                             |
-| `cgb_registry_register` | Register a repo in the global multi-repo registry                         |
-| `cgb_registry_list`     | List all registered repos                                                  |
-| `cgb_registry_search`   | Search across all registered project graphs                                |
-| `cgb_embed_build`       | Compute and store BM25/vector embeddings for all nodes                     |
-| `cgb_embed_search`      | Hybrid search (BM25 + vector + LIKE → Reciprocal Rank Fusion)              |
+See [`docs/MCP_TOOLS.md`](docs/MCP_TOOLS.md) for the complete reference. Key tools:
+
+- **Symbol lookup:** `cgb_symbol`, `cgb_search`, `cgb_callers`, `cgb_callees`
+- **Dependency analysis:** `cgb_deps`, `cgb_impact`, `cgb_path`, `cgb_bundle`
+- **Flow analysis:** `cgb_entry_points`, `cgb_call_chain`, `cgb_large_functions`, `cgb_criticality`
+- **Architecture:** `cgb_communities`, `cgb_architecture`, `cgb_stats`
+- **Code quality:** `cgb_dead_code`, `cgb_detect_changes`, `cgb_review_context`
+- **Refactoring:** `cgb_rename_preview`, `cgb_apply_refactor`, `cgb_refactor_suggest`
+- **Documentation:** `cgb_wiki_generate`, `cgb_wiki_section`
+- **Search & embeddings:** `cgb_embed_build`, `cgb_embed_similar` (vector), `cgb_search` (hybrid when embeddings exist)
+- **Multi-repo:** `cgb_registry_register`, `cgb_registry_list`, `cgb_registry_search`
+- **Configuration:** `cgb_init`
 
 ### Built-in MCP Prompts
 
-The server also exposes a prompt library (`ListPrompts` / `GetPrompt`) with predefined AI reviewer and architecture prompts.
+The server also exposes a prompt library (`ListPrompts` / `GetPrompt`) with predefined prompts:
+- `review_changes` — code-review prompt with cgb context
+- `architecture_map` — architecture mapping for onboarding
+- `debug_issue` — debugging prompt with call-chain tracing
+- `onboard_developer` — developer onboarding guide
+- `pre_merge_check` — pre-merge quality checklist
 
 ---
 

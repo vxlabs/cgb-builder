@@ -16,6 +16,7 @@ import type { GraphDb } from '../graph/db.js';
 import type { GraphNode } from '../types.js';
 import type { EmbeddingProvider } from './providers.js';
 import { getProvider } from './providers.js';
+import { warnOnce, debug } from '../util/log.js';
 
 export type { EmbeddingProvider };
 export { getProvider };
@@ -43,11 +44,17 @@ export function decodeVector(bytes: Uint8Array): number[] {
   return Array.from(f32);
 }
 
-
 // ─── Node text for embedding ──────────────────────────────────────────────────
 
 export function nodeToText(node: GraphNode): string {
-  return [node.name, node.kind, node.description ?? '', node.language ?? '']
+  return [
+    node.name,
+    node.kind,
+    node.signature ?? '',
+    node.doc ?? '',
+    node.description ?? '',
+    node.language ?? '',
+  ]
     .filter(Boolean)
     .join(' ');
 }
@@ -99,8 +106,9 @@ export async function embedNodes(
   try {
     const metaPath = path.join(db.getDbDir(), 'embed-meta.json');
     fs.writeFileSync(metaPath, JSON.stringify({ provider: provider.name }), 'utf8');
-  } catch {
+  } catch (err) {
     // Non-fatal — search will fall back to centroid approximation
+    debug('embed', 'could not write embed-meta.json', err);
   }
 
   return { embedded: toEmbed.length, skipped };
@@ -108,7 +116,10 @@ export async function embedNodes(
 
 // ─── RRF merge ────────────────────────────────────────────────────────────────
 
-function rrfMerge(lists: Array<Array<{ id: string }>>, k = 60): Array<{ id: string; score: number }> {
+function rrfMerge(
+  lists: Array<Array<{ id: string }>>,
+  k = 60,
+): Array<{ id: string; score: number }> {
   const scores = new Map<string, number>();
   for (const list of lists) {
     list.forEach(({ id }, rank) => {
@@ -125,10 +136,13 @@ function rrfMerge(lists: Array<Array<{ id: string }>>, k = 60): Array<{ id: stri
 export interface HybridSearchOptions {
   limit?: number;
   contextFiles?: string[]; // nodes in these files get a 1.5x boost
+  /** Never call a remote embedding provider (used by read-only MCP mode). */
+  localOnly?: boolean;
 }
 
 /**
- * Three-way hybrid search: FTS5 BM25 + vector cosine + LIKE keyword.
+ * Hybrid search: lexical (exact/prefix/FTS5 BM25 via searchNodesRanked) fused with
+ * vector cosine via RRF. The vector leg is added only when embeddings exist.
  * Results are merged with Reciprocal Rank Fusion and boosted by node kind
  * and context-file membership.
  */
@@ -137,11 +151,11 @@ export async function hybridSearch(
   query: string,
   options: HybridSearchOptions = {},
 ): Promise<EmbedResult[]> {
-  const { limit = 20, contextFiles } = options;
+  const { limit = 20, contextFiles, localOnly = false } = options;
   const contextSet = new Set(contextFiles ?? []);
 
-  // 1. FTS5 BM25
-  const bm25 = db.searchNodesRanked(query, 50);
+  // 1. Lexical: exact -> prefix -> FTS5 BM25
+  const lexical = db.searchNodesRanked(query, { limit: 50 });
 
   // 2. Vector cosine using stored embeddings (if available)
   const vectorRanked: Array<{ id: string }> = [];
@@ -156,11 +170,19 @@ export async function hybridSearch(
         const { provider: providerName } = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as {
           provider: string;
         };
-        const provider = getProvider(providerName);
-        queryVec = await provider.embedQuery(query);
+        if (!localOnly || providerName === 'local') {
+          const provider = getProvider(providerName);
+          queryVec = await provider.embedQuery(query);
+        }
       }
-    } catch {
+    } catch (err) {
       // Provider unavailable or API error — fall through to centroid approximation
+      warnOnce(
+        'embed',
+        'provider-unavailable',
+        'embedding provider unavailable; using TF-IDF approximation',
+        err,
+      );
     }
 
     // Fallback: centroid of top TF-IDF hits' stored vectors
@@ -170,6 +192,7 @@ export async function hybridSearch(
       const topVecs = topIds
         .map((id) => db.getEmbedding(id))
         .filter(Boolean)
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- value presence guaranteed by prior check/invariant
         .map((e) => decodeVector(e!.vector));
 
       if (topVecs.length > 0) {
@@ -187,7 +210,9 @@ export async function hybridSearch(
       const scored: Array<{ id: string; score: number }> = [];
       for (const emb of db.getAllEmbeddings()) {
         const vec = decodeVector(emb.vector);
-        let dot = 0, magA = 0, magB = 0;
+        let dot = 0,
+          magA = 0,
+          magB = 0;
         for (let i = 0; i < Math.min(vec.length, qv.length); i++) {
           dot += vec[i] * qv[i];
           magA += vec[i] * vec[i];
@@ -201,15 +226,8 @@ export async function hybridSearch(
     }
   }
 
-  // 3. Keyword LIKE fallback
-  const likeResults = db.searchNodes(query).slice(0, 50);
-  const likeRanked = likeResults.map((n) => ({ id: n.id }));
-
-  // 4. RRF merge
-  const merged = rrfMerge(
-    [bm25.map((r) => ({ id: r.id })), vectorRanked, likeRanked],
-    60,
-  );
+  // 3. RRF merge (vector leg is empty when there are no embeddings)
+  const merged = rrfMerge([lexical.map((r) => ({ id: r.id })), vectorRanked], 60);
 
   // 5. Apply boosts and resolve nodes
   const results: EmbedResult[] = [];
@@ -221,7 +239,8 @@ export async function hybridSearch(
 
     // Query-aware kind boosting
     if (/^[A-Z]/.test(query) && node.kind === 'class') boostedScore *= 1.5;
-    if (/_/.test(query) && (node.kind === 'function' || node.kind === 'method')) boostedScore *= 1.5;
+    if (/_/.test(query) && (node.kind === 'function' || node.kind === 'method'))
+      boostedScore *= 1.5;
     if (/\./.test(query) && node.kind === 'file') boostedScore *= 2.0;
 
     // Context-file boost
@@ -350,22 +369,19 @@ export class EmbedSearcher {
   }
 
   private nodeTokens(node: GraphNode): string[] {
-    const text = [
-      node.name,
-      node.kind,
-      node.filePath,
-      node.description ?? '',
-    ].join(' ');
+    const text = [node.name, node.kind, node.filePath, node.description ?? ''].join(' ');
     return this.tokenize(text);
   }
 
   private tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      // Split on non-word chars, camelCase, underscores
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 2 && t.length <= 40);
+    return (
+      text
+        .toLowerCase()
+        // Split on non-word chars, camelCase, underscores
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 2 && t.length <= 40)
+    );
   }
 
   private termFrequency(tokens: string[]): Map<string, number> {
