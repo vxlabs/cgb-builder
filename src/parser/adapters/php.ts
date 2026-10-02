@@ -104,7 +104,12 @@ export class PhpAdapter implements LanguageAdapter {
         const className = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, className);
         const snippet = truncate(source.slice(node.startIndex, node.startIndex + 120));
-        const label = nodeType === 'interface_declaration' ? 'Interface' : nodeType === 'trait_declaration' ? 'Trait' : 'Class';
+        const label =
+          nodeType === 'interface_declaration'
+            ? 'Interface'
+            : nodeType === 'trait_declaration'
+              ? 'Trait'
+              : 'Class';
 
         nodes.push({
           id: nodeId,
@@ -144,7 +149,8 @@ export class PhpAdapter implements LanguageAdapter {
         if (seen.has(fnName)) continue;
         seen.add(fnName);
 
-        const insideClass = this.findAncestorOfType(node, 'class_declaration') ||
+        const insideClass =
+          this.findAncestorOfType(node, 'class_declaration') ||
           this.findAncestorOfType(node, 'trait_declaration');
         const kind = insideClass ? 'method' : 'function';
         const fnId = makeNodeId(kind, filePath, fnName);

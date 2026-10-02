@@ -100,8 +100,8 @@ export class KotlinAdapter implements LanguageAdapter {
 
     for (const [nodeType, kind, label] of typeMap) {
       for (const node of this.findByType(root, nodeType)) {
-        const nameNode = node.childForFieldName('name') ??
-          this.findByType(node, 'simple_identifier')[0];
+        const nameNode =
+          node.childForFieldName('name') ?? this.findByType(node, 'simple_identifier')[0];
         if (!nameNode) continue;
         const className = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, className);
@@ -138,8 +138,8 @@ export class KotlinAdapter implements LanguageAdapter {
   ): void {
     const seen = new Set<string>();
     for (const node of this.findByType(root, 'function_declaration')) {
-      const nameNode = node.childForFieldName('name') ??
-        this.findByType(node, 'simple_identifier')[0];
+      const nameNode =
+        node.childForFieldName('name') ?? this.findByType(node, 'simple_identifier')[0];
       if (!nameNode) continue;
       const fnName = nameNode.text;
       if (seen.has(fnName)) continue;

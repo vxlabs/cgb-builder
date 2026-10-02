@@ -360,11 +360,13 @@ export class TypeScriptAdapter implements LanguageAdapter {
     // Try source extensions first (prefer .ts over .js for the same base name)
     const extensions = ['.ts', '.tsx', '.js', '.jsx'];
     for (const ext of extensions) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
       if (require('fs').existsSync(resolved + ext)) return resolved + ext;
     }
     // Try index file
     for (const ext of extensions) {
       const idx = path.join(resolved, `index${ext}`);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
       if (require('fs').existsSync(idx)) return idx;
     }
     // Return the stripped path (without phantom extension) as fallback

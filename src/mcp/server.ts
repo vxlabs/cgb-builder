@@ -132,7 +132,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Absolute path to the project root directory' },
-        force: { type: 'boolean', description: 'Re-parse all files even if unchanged (default: false)' },
+        force: {
+          type: 'boolean',
+          description: 'Re-parse all files even if unchanged (default: false)',
+        },
       },
       required: ['root'],
     },
@@ -145,9 +148,15 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        root: { type: 'string', description: 'Project root directory (must have been initialized with cgb_init)' },
+        root: {
+          type: 'string',
+          description: 'Project root directory (must have been initialized with cgb_init)',
+        },
         target: { type: 'string', description: 'Relative or absolute path to the file' },
-        depth: { type: 'number', description: 'How many levels of transitive deps to include (default: 3)' },
+        depth: {
+          type: 'number',
+          description: 'How many levels of transitive deps to include (default: 3)',
+        },
       },
       required: ['root', 'target'],
     },
@@ -161,7 +170,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        target: { type: 'string', description: 'Relative or absolute path to the file being changed' },
+        target: {
+          type: 'string',
+          description: 'Relative or absolute path to the file being changed',
+        },
         depth: { type: 'number', description: 'Maximum traversal depth (default: 10)' },
       },
       required: ['root', 'target'],
@@ -176,7 +188,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        query: { type: 'string', description: 'Search term (matches node name, description, and file path)' },
+        query: {
+          type: 'string',
+          description: 'Search term (matches node name, description, and file path)',
+        },
       },
       required: ['root', 'query'],
     },
@@ -194,7 +209,10 @@ const TOOLS = [
         root: { type: 'string', description: 'Project root directory' },
         target: { type: 'string', description: 'Relative or absolute path to the file to bundle' },
         depth: { type: 'number', description: 'Dependency traversal depth (default: 2)' },
-        includeSource: { type: 'boolean', description: 'Include the full source of the target file in the bundle (default: true)' },
+        includeSource: {
+          type: 'boolean',
+          description: 'Include the full source of the target file in the bundle (default: true)',
+        },
       },
       required: ['root', 'target'],
     },
@@ -238,8 +256,15 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be inside a git repository)' },
-        base: { type: 'string', description: 'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234' },
+        root: {
+          type: 'string',
+          description: 'Absolute path to the project root (must be inside a git repository)',
+        },
+        base: {
+          type: 'string',
+          description:
+            'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234',
+        },
       },
       required: ['root'],
     },
@@ -254,12 +279,20 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be inside a git repository)' },
-        base: { type: 'string', description: 'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234' },
+        root: {
+          type: 'string',
+          description: 'Absolute path to the project root (must be inside a git repository)',
+        },
+        base: {
+          type: 'string',
+          description:
+            'Git base ref to diff against (default: HEAD~1). Examples: main, HEAD~3, abc1234',
+        },
         format: {
           type: 'string',
           enum: ['json', 'markdown'],
-          description: 'Output format — "json" for structured data, "markdown" for a human-readable brief (default: markdown)',
+          description:
+            'Output format — "json" for structured data, "markdown" for a human-readable brief (default: markdown)',
         },
       },
       required: ['root'],
@@ -305,7 +338,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        nodeId: { type: 'string', description: 'Node ID to trace from (e.g. "function:path/to/file.ts:myFunc")' },
+        nodeId: {
+          type: 'string',
+          description: 'Node ID to trace from (e.g. "function:path/to/file.ts:myFunc")',
+        },
         maxDepth: { type: 'number', description: 'Maximum depth to trace (default: 5)' },
       },
       required: ['root', 'nodeId'],
@@ -382,8 +418,14 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        nodeId: { type: 'string', description: 'Node ID of the symbol to rename (use cgb_search to find it)' },
-        newName: { type: 'string', description: 'New name for the symbol (required to generate a refactorId for apply)' },
+        nodeId: {
+          type: 'string',
+          description: 'Node ID of the symbol to rename (use cgb_search to find it)',
+        },
+        newName: {
+          type: 'string',
+          description: 'New name for the symbol (required to generate a refactorId for apply)',
+        },
       },
       required: ['root', 'nodeId'],
     },
@@ -397,7 +439,10 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (used for safety checks)' },
+        root: {
+          type: 'string',
+          description: 'Absolute path to the project root (used for safety checks)',
+        },
         refactorId: { type: 'string', description: '8-char hex ID returned by cgb_rename_preview' },
       },
       required: ['root', 'refactorId'],
@@ -428,7 +473,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        outputDir: { type: 'string', description: 'Optional output directory. If set, writes .md files there.' },
+        outputDir: {
+          type: 'string',
+          description: 'Optional output directory. If set, writes .md files there.',
+        },
       },
       required: ['root'],
     },
@@ -442,7 +490,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Project root directory' },
-        communityIndex: { type: 'number', description: 'Index (0-based) of the community from cgb_communities output' },
+        communityIndex: {
+          type: 'number',
+          description: 'Index (0-based) of the community from cgb_communities output',
+        },
       },
       required: ['root', 'communityIndex'],
     },
@@ -457,7 +508,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Absolute path to the project root' },
-        name: { type: 'string', description: 'Optional friendly name for the project (defaults to directory name)' },
+        name: {
+          type: 'string',
+          description: 'Optional friendly name for the project (defaults to directory name)',
+        },
       },
       required: ['root'],
     },
@@ -479,7 +533,10 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        query: { type: 'string', description: 'Search term to match against node names, descriptions and file paths' },
+        query: {
+          type: 'string',
+          description: 'Search term to match against node names, descriptions and file paths',
+        },
         maxPerRepo: { type: 'number', description: 'Maximum results per repo (default: 10)' },
       },
       required: ['query'],
@@ -497,7 +554,10 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         root: { type: 'string', description: 'Absolute path to the project root' },
-        provider: { type: 'string', description: 'Embedding provider: "local" | "google" | "minimax" (default: "local")' },
+        provider: {
+          type: 'string',
+          description: 'Embedding provider: "local" | "google" | "minimax" (default: "local")',
+        },
       },
       required: ['root'],
     },
@@ -511,8 +571,15 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        root: { type: 'string', description: 'Absolute path to the project root (must be initialised with cgb_init)' },
-        query: { type: 'string', description: 'Free-text query — e.g. "authentication middleware" or "database connection pool"' },
+        root: {
+          type: 'string',
+          description: 'Absolute path to the project root (must be initialised with cgb_init)',
+        },
+        query: {
+          type: 'string',
+          description:
+            'Free-text query — e.g. "authentication middleware" or "database connection pool"',
+        },
         limit: { type: 'number', description: 'Maximum results to return (default: 20)' },
         contextFiles: {
           type: 'array',
@@ -752,7 +819,11 @@ async function handleDetectChanges(args: { root: string; base?: string }) {
   }
 }
 
-async function handleReviewContext(args: { root: string; base?: string; format?: 'json' | 'markdown' }) {
+async function handleReviewContext(args: {
+  root: string;
+  base?: string;
+  format?: 'json' | 'markdown';
+}) {
   const { root, base = 'HEAD~1', format = 'markdown' } = args;
   if (!fs.existsSync(root)) {
     return err(`Directory does not exist: ${root}`);
@@ -938,7 +1009,12 @@ async function handleWikiGenerate(args: { root: string; outputDir?: string }) {
     return ok({
       totalPages: result.totalPages,
       indexPage: result.indexPage,
-      pages: result.pages.map((p) => ({ title: p.title, slug: p.slug, communityId: p.communityId, chars: p.content.length })),
+      pages: result.pages.map((p) => ({
+        title: p.title,
+        slug: p.slug,
+        communityId: p.communityId,
+        chars: p.content.length,
+      })),
     });
   } finally {
     db.close();
@@ -955,7 +1031,9 @@ async function handleWikiSection(args: { root: string; communityIndex: number })
     const communities = detector.detect();
 
     if (communityIndex < 0 || communityIndex >= communities.length) {
-      return err(`communityIndex ${communityIndex} out of range. There are ${communities.length} communities (0-based).`);
+      return err(
+        `communityIndex ${communityIndex} out of range. There are ${communities.length} communities (0-based).`,
+      );
     }
 
     const generator = new WikiGenerator(db, detector);
@@ -1026,7 +1104,11 @@ async function handleEmbedSearch(args: {
   const { db } = await getServices(root);
   try {
     const { hybridSearch } = await import('../embed/index.js');
-    const results = await hybridSearch(db, query, { limit, contextFiles, localOnly: mcpOptions.readOnly });
+    const results = await hybridSearch(db, query, {
+      limit,
+      contextFiles,
+      localOnly: mcpOptions.readOnly,
+    });
     return ok({ query, count: results.length, results });
   } finally {
     db.close();
@@ -1056,7 +1138,11 @@ const PROMPTS = [
       'Pass root so the agent can call cgb_review_context automatically.',
     arguments: [
       { name: 'root', description: 'Absolute project root', required: true },
-      { name: 'base', description: 'Base git ref to diff against (default: main)', required: false },
+      {
+        name: 'base',
+        description: 'Base git ref to diff against (default: main)',
+        required: false,
+      },
     ],
   },
   {
@@ -1064,9 +1150,7 @@ const PROMPTS = [
     description:
       'Produces a prompt that asks the agent to describe the high-level architecture ' +
       'of the project using cgb_architecture and cgb_communities.',
-    arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
-    ],
+    arguments: [{ name: 'root', description: 'Absolute project root', required: true }],
   },
   {
     name: 'debug_issue',
@@ -1075,8 +1159,16 @@ const PROMPTS = [
       'checks dependencies, and proposes root-cause hypotheses.',
     arguments: [
       { name: 'root', description: 'Absolute project root', required: true },
-      { name: 'symptom', description: 'Short description of the observed bug or failure', required: true },
-      { name: 'entry', description: 'File or function name that is the suspected entry point', required: false },
+      {
+        name: 'symptom',
+        description: 'Short description of the observed bug or failure',
+        required: true,
+      },
+      {
+        name: 'entry',
+        description: 'File or function name that is the suspected entry point',
+        required: false,
+      },
     ],
   },
   {
@@ -1084,9 +1176,7 @@ const PROMPTS = [
     description:
       'Creates an onboarding prompt that walks a new developer through the codebase: ' +
       'architecture overview, key entry points, communities, and top-level wiki.',
-    arguments: [
-      { name: 'root', description: 'Absolute project root', required: true },
-    ],
+    arguments: [{ name: 'root', description: 'Absolute project root', required: true }],
   },
   {
     name: 'pre_merge_check',
@@ -1148,7 +1238,7 @@ function buildOnboardDeveloperPrompt(root: string): string {
     '',
     'Please produce a concise onboarding guide by following these steps:',
     '',
-    '**Step 1** — Call `cgb_stats` for a bird\'s-eye view (file count, node count, edge count).',
+    "**Step 1** — Call `cgb_stats` for a bird's-eye view (file count, node count, edge count).",
     '**Step 2** — Call `cgb_architecture` to explain the layer structure.',
     '**Step 3** — Call `cgb_communities` to describe the major module clusters.',
     '**Step 4** — Call `cgb_entry_points` to list the main public entry points a developer will interact with.',
@@ -1284,50 +1374,69 @@ export async function startMcpServer(options: McpServerOptions = {}): Promise<vo
     root: options.root ? path.resolve(options.root) : undefined,
     dbDir: options.dbDir ? path.resolve(options.dbDir) : undefined,
   };
-  const server = new Server({ name: 'cgb', version: '1.2.0' }, { capabilities: { tools: {}, prompts: {} } });
+  const server = new Server(
+    { name: 'cgb', version: '1.2.0' },
+    { capabilities: { tools: {}, prompts: {} } },
+  );
 
   // List available tools
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(mcpOptions) }));
 
   // List available prompts (prompts reference mutating tools, so none are served read-only)
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.setRequestHandler(ListPromptsRequestSchema, async () => ({
     prompts: mcpOptions.readOnly ? [] : PROMPTS,
   }));
 
   // Resolve a prompt by name
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
     const { name, arguments: pArgs = {} } = request.params;
-    const root: string = (pArgs['root'] as string) ?? '';
-    const base: string = (pArgs['base'] as string) ?? 'main';
+    const root: string = pArgs['root'] ?? '';
+    const base: string = pArgs['base'] ?? 'main';
 
     switch (name) {
       case 'review_changes':
         return {
           description: 'Code-review prompt with cgb context',
-          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } },
+          ],
         };
       case 'architecture_map':
         return {
           description: 'Architecture mapping prompt',
-          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } },
+          ],
         };
       case 'debug_issue': {
-        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
+        const symptom: string = pArgs['symptom'] ?? 'unknown error';
         const entry: string | undefined = pArgs['entry'] as string | undefined;
         return {
           description: 'Debugging prompt with call-chain tracing',
-          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
+          messages: [
+            {
+              role: 'user',
+              content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) },
+            },
+          ],
         };
       }
       case 'onboard_developer':
         return {
           description: 'Developer onboarding guide',
-          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } },
+          ],
         };
       case 'pre_merge_check':
         return {
           description: 'Pre-merge quality checklist',
-          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
+          messages: [
+            { role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } },
+          ],
         };
       default:
         throw new Error(`Unknown prompt: ${name}`);
@@ -1337,7 +1446,7 @@ export async function startMcpServer(options: McpServerOptions = {}): Promise<vo
   // Handle tool calls
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
-    return callTool(name, args as Record<string, unknown>, mcpOptions);
+    return callTool(name, args, mcpOptions);
   });
 
   // Connect via stdio

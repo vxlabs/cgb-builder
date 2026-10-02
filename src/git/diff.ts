@@ -77,6 +77,7 @@ export function getRepoRoot(root: string): string {
  * Parses both `--name-status` (for add/modify/delete/rename) and
  * `--numstat` (for line counts) and merges them by file path.
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function getGitChanges(root: string, base = 'HEAD~1'): Promise<GitChange[]> {
   if (!isGitRepo(root)) {
     throw new Error(`Not a git repository: ${root}`);

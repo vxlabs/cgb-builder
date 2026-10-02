@@ -137,10 +137,16 @@ export function formatReviewContext(ctx: ReviewContext): string {
   }
 
   // Per-file risk table
-  lines.push(`## File Risk Breakdown`, ``, `| File | Risk | Blast | Tests |`, `|------|------|-------|-------|`);
+  lines.push(
+    `## File Risk Breakdown`,
+    ``,
+    `| File | Risk | Blast | Tests |`,
+    `|------|------|-------|-------|`,
+  );
   for (const d of ctx.riskSummary.changes) {
     const short = d.file.filePath.split(/[\\/]/).slice(-2).join('/');
-    const emoji = d.riskScore >= 75 ? '🔴' : d.riskScore >= 50 ? '🟠' : d.riskScore >= 25 ? '🟡' : '🟢';
+    const emoji =
+      d.riskScore >= 75 ? '🔴' : d.riskScore >= 50 ? '🟠' : d.riskScore >= 25 ? '🟡' : '🟢';
     lines.push(
       `| \`${short}\` | ${emoji} ${d.riskScore} | ${d.blastRadius} files | ${d.hasTests ? '✓' : '✗'} |`,
     );

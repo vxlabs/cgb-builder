@@ -53,7 +53,10 @@ export class RustAdapter implements LanguageAdapter {
   ): void {
     const seen = new Set<string>();
     for (const node of this.findByType(root, 'use_declaration')) {
-      const text = node.text.replace(/^use\s+/, '').replace(/;$/, '').trim();
+      const text = node.text
+        .replace(/^use\s+/, '')
+        .replace(/;$/, '')
+        .trim();
       const rootCrate = text.split('::')[0];
       if (!rootCrate || seen.has(rootCrate)) continue;
       seen.add(rootCrate);
@@ -103,7 +106,8 @@ export class RustAdapter implements LanguageAdapter {
         const typeName = nameNode.text;
         const nodeId = makeNodeId(kind, filePath, typeName);
         const snippet = truncate(source.slice(node.startIndex, node.startIndex + 120));
-        const label = nodeType === 'trait_item' ? 'Trait' : nodeType === 'enum_item' ? 'Enum' : 'Struct';
+        const label =
+          nodeType === 'trait_item' ? 'Trait' : nodeType === 'enum_item' ? 'Enum' : 'Struct';
 
         nodes.push({
           id: nodeId,

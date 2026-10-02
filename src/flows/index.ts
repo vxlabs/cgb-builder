@@ -98,9 +98,11 @@ export class FlowsAnalyzer {
 
     for (const node of nodes) {
       if (node.isExternal) continue;
-      const fanIn = this.db.getEdgesToByKind(node.id, 'calls').length +
+      const fanIn =
+        this.db.getEdgesToByKind(node.id, 'calls').length +
         this.db.getEdgesToByKind(node.id, 'imports').length;
-      const fanOut = this.db.getEdgesFromByKind(node.id, 'calls').length +
+      const fanOut =
+        this.db.getEdgesFromByKind(node.id, 'calls').length +
         this.db.getEdgesFromByKind(node.id, 'imports').length;
 
       // Score: fan-in has higher weight (being called by many = critical)
@@ -111,7 +113,16 @@ export class FlowsAnalyzer {
       else if (score >= 15) label = 'high';
       else if (score >= 5) label = 'medium';
 
-      scores.push({ id: node.id, name: node.name, filePath: node.filePath, kind: node.kind, fanIn, fanOut, score, label });
+      scores.push({
+        id: node.id,
+        name: node.name,
+        filePath: node.filePath,
+        kind: node.kind,
+        fanIn,
+        fanOut,
+        score,
+        label,
+      });
     }
 
     return scores.sort((a, b) => b.score - a.score).slice(0, limit);
@@ -167,7 +178,15 @@ export function findLargeFunctions(db: GraphDb, limit = 20): LargeFunction[] {
     const fanIn = db.getEdgesToByKind(node.id, 'calls').length;
     const fanOut = db.getEdgesFromByKind(node.id, 'calls').length;
     const complexityScore = fanIn + fanOut * 2;
-    results.push({ id: node.id, name: node.name, filePath: node.filePath, kind: node.kind, fanIn, fanOut, complexityScore });
+    results.push({
+      id: node.id,
+      name: node.name,
+      filePath: node.filePath,
+      kind: node.kind,
+      fanIn,
+      fanOut,
+      complexityScore,
+    });
   }
 
   return results.sort((a, b) => b.complexityScore - a.complexityScore).slice(0, limit);

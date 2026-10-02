@@ -74,8 +74,16 @@ export type VizGraph = VizData;
 // ─── Build graph data from db ─────────────────────────────────────────────────
 
 const KIND_GROUPS: Record<string, number> = {
-  file: 0, class: 1, function: 2, method: 3, interface: 4,
-  type: 5, variable: 6, test: 7, module: 8, external_dep: 9,
+  file: 0,
+  class: 1,
+  function: 2,
+  method: 3,
+  interface: 4,
+  type: 5,
+  variable: 6,
+  test: 7,
+  module: 8,
+  external_dep: 9,
 };
 
 export function buildVizGraph(db: GraphDb, engine?: GraphEngine): VizData {
@@ -101,6 +109,7 @@ export function buildVizGraph(db: GraphDb, engine?: GraphEngine): VizData {
     isExternal: n.isExternal,
     fanIn: fanIn.get(n.id) ?? 0,
     fanOut: fanOut.get(n.id) ?? 0,
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
     communityId: (n as any).communityId ?? null,
     meta: n.meta || '{}',
   }));
@@ -136,26 +145,43 @@ export function buildVizGraph(db: GraphDb, engine?: GraphEngine): VizData {
   let cycleCount = 0;
   let orphanCount = 0;
   if (engine) {
-    try { cycleCount = engine.detectCycles().length; } catch { /* empty */ }
-    try { orphanCount = engine.orphans().length; } catch { /* empty */ }
+    try {
+      cycleCount = engine.detectCycles().length;
+    } catch {
+      /* empty */
+    }
+    try {
+      orphanCount = engine.orphans().length;
+    } catch {
+      /* empty */
+    }
   }
 
   const stats: VizStats = {
     nodeCount: basicStats.nodes,
     edgeCount: basicStats.edges,
     fileCount: basicStats.files,
-    nodesByKind, edgesByKind, languageBreakdown,
-    topConnected, cycleCount, orphanCount,
+    nodesByKind,
+    edgesByKind,
+    languageBreakdown,
+    topConnected,
+    cycleCount,
+    orphanCount,
   };
 
   // Communities
   let communities: VizCommunity[] = [];
   try {
     communities = db.getCommunities().map((c) => ({
-      id: c.id, name: c.name, size: c.size,
-      cohesion: c.cohesion, dominantLanguage: c.dominantLanguage ?? null,
+      id: c.id,
+      name: c.name,
+      size: c.size,
+      cohesion: c.cohesion,
+      dominantLanguage: c.dominantLanguage ?? null,
     }));
-  } catch { /* empty */ }
+  } catch {
+    /* empty */
+  }
 
   // File tree
   const fileTree = buildFileTree(rawNodes.filter((n) => n.kind === 'file').map((n) => n.filePath));
@@ -193,7 +219,11 @@ function buildFileTree(filePaths: string[]): FileTreeNode[] {
 // ─── HTML generation ──────────────────────────────────────────────────────────
 
 function escHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 function buildCss(): string {
@@ -1493,7 +1523,7 @@ export function generateHtml(data: VizData, title: string): string {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>${escHtml(title)} — Code Graph</title>
   ${buildCss()}
-  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"><\/script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 </head>
 <body>
 <div id="app">

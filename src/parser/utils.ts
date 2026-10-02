@@ -41,11 +41,13 @@ export function resolveImportPath(
     const resolved = path.resolve(dir, stripped);
     // Try appending source extensions
     for (const ext of extensions) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
       if (require('fs').existsSync(resolved + ext)) {
         return resolved + ext;
       }
       // Try index file
       const indexPath = path.join(resolved, `index${ext}`);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
       if (require('fs').existsSync(indexPath)) {
         return indexPath;
       }

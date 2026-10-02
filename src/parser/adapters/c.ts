@@ -57,8 +57,7 @@ export class CAdapter implements LanguageAdapter {
   ): void {
     const seen = new Set<string>();
     for (const node of this.findByType(root, 'preproc_include')) {
-      const pathNode =
-        node.childForFieldName('path') ?? node.namedChildren[0];
+      const pathNode = node.childForFieldName('path') ?? node.namedChildren[0];
       if (!pathNode) continue;
       const rawPath = pathNode.text.replace(/^[<"']|[>"']$/g, '');
       if (!rawPath || seen.has(rawPath)) continue;

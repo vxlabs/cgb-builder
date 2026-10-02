@@ -172,6 +172,7 @@ function addHook(root: string): void {
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function runInstall(options: InstallOptions): Promise<void> {
   const { root, skill, hook } = options;
 

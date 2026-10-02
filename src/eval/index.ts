@@ -46,7 +46,7 @@ export interface RepoConfig {
 export interface BenchmarkResult {
   repo: string;
   benchmark: BenchmarkKind;
-  score: number;        // 0-1 for quality metrics, ms for timing
+  score: number; // 0-1 for quality metrics, ms for timing
   detail: string;
   passed: boolean;
   durationMs: number;
@@ -66,42 +66,42 @@ export const BENCHMARK_REPOS: RepoConfig[] = [
     url: 'https://github.com/expressjs/express',
     ref: 'v4.18.2',
     knownEntryPoints: ['createApplication', 'Router'],
-    goldenSearch: { express: 'index.js', 'middleware': 'lib/middleware/init.js' },
+    goldenSearch: { express: 'index.js', middleware: 'lib/middleware/init.js' },
   },
   {
     name: 'fastapi',
     url: 'https://github.com/tiangolo/fastapi',
     ref: '0.104.1',
     knownEntryPoints: ['FastAPI', 'APIRouter'],
-    goldenSearch: { 'routing': 'fastapi/routing.py', 'openapi': 'fastapi/openapi/utils.py' },
+    goldenSearch: { routing: 'fastapi/routing.py', openapi: 'fastapi/openapi/utils.py' },
   },
   {
     name: 'flask',
     url: 'https://github.com/pallets/flask',
     ref: '3.0.0',
     knownEntryPoints: ['Flask', 'Blueprint'],
-    goldenSearch: { 'app': 'src/flask/app.py' },
+    goldenSearch: { app: 'src/flask/app.py' },
   },
   {
     name: 'gin',
     url: 'https://github.com/gin-gonic/gin',
     ref: 'v1.9.1',
     knownEntryPoints: ['Default', 'New'],
-    goldenSearch: { 'router': 'routergroup.go' },
+    goldenSearch: { router: 'routergroup.go' },
   },
   {
     name: 'httpx',
     url: 'https://github.com/encode/httpx',
     ref: '0.25.0',
     knownEntryPoints: ['Client', 'AsyncClient'],
-    goldenSearch: { 'request': 'httpx/_client.py' },
+    goldenSearch: { request: 'httpx/_client.py' },
   },
   {
     name: 'nextjs',
     url: 'https://github.com/vercel/next.js',
     ref: 'v14.0.1',
     knownEntryPoints: ['createServer', 'NextServer'],
-    goldenSearch: { 'routing': 'packages/next/src/server/router.ts' },
+    goldenSearch: { routing: 'packages/next/src/server/router.ts' },
   },
 ];
 
@@ -132,7 +132,9 @@ export class EvalHarness {
   }
 
   /** Build the graph for a repo, returning the initialised db + durationMs. */
-  private async buildGraph(repoPath: string): Promise<{ db: GraphDb; engine: GraphEngine; durationMs: number }> {
+  private async buildGraph(
+    repoPath: string,
+  ): Promise<{ db: GraphDb; engine: GraphEngine; durationMs: number }> {
     const db = new GraphDb(repoPath);
     await db.init();
     const engine = new GraphEngine(db);
@@ -164,14 +166,23 @@ export class EvalHarness {
     const golden = repo.goldenSearch ?? {};
     const queries = Object.keys(golden);
     if (queries.length === 0) {
-      return { repo: repo.name, benchmark: 'search_quality', score: 1, detail: 'no golden fixtures', passed: true, durationMs: 0 };
+      return {
+        repo: repo.name,
+        benchmark: 'search_quality',
+        score: 1,
+        detail: 'no golden fixtures',
+        passed: true,
+        durationMs: 0,
+      };
     }
     let hits = 0;
     for (const [query, expected] of Object.entries(golden)) {
       const results = db.searchNodes(query);
-      const found = results.slice(0, 10).some(n =>
-        (n.filePath?.includes(expected) ?? false) || (n.name?.includes(expected) ?? false),
-      );
+      const found = results
+        .slice(0, 10)
+        .some(
+          (n) => (n.filePath?.includes(expected) ?? false) || (n.name?.includes(expected) ?? false),
+        );
       if (found) hits++;
     }
     const score = hits / queries.length;
@@ -191,7 +202,14 @@ export class EvalHarness {
     const known = repo.knownImpact ?? {};
     const entries = Object.entries(known);
     if (entries.length === 0) {
-      return { repo: repo.name, benchmark: 'impact_accuracy', score: 1, detail: 'no known impact fixtures', passed: true, durationMs: 0 };
+      return {
+        repo: repo.name,
+        benchmark: 'impact_accuracy',
+        score: 1,
+        detail: 'no known impact fixtures',
+        passed: true,
+        durationMs: 0,
+      };
     }
     let totalRecall = 0;
     for (const [changed, expected] of entries) {
@@ -199,8 +217,8 @@ export class EvalHarness {
       const fileNodes = db.getNodesByFile(changed);
       const nodeId = fileNodes[0]?.id ?? `file:${path.join(repoPath, changed)}`;
       const result = engine.impact(nodeId);
-      const impactedPaths = result?.affected.map(a => a.node.filePath ?? '') ?? [];
-      const found = expected.filter(e => impactedPaths.some(p => p.includes(e)));
+      const impactedPaths = result?.affected.map((a) => a.node.filePath ?? '') ?? [];
+      const found = expected.filter((e) => impactedPaths.some((p) => p.includes(e)));
       totalRecall += expected.length > 0 ? found.length / expected.length : 1;
     }
     const score = totalRecall / entries.length;
@@ -219,7 +237,14 @@ export class EvalHarness {
     await this.buildGraph(repoPath);
     const expected = repo.knownEntryPoints ?? [];
     if (expected.length === 0) {
-      return { repo: repo.name, benchmark: 'flow_completeness', score: 1, detail: 'no known entry-point fixtures', passed: true, durationMs: 0 };
+      return {
+        repo: repo.name,
+        benchmark: 'flow_completeness',
+        score: 1,
+        detail: 'no known entry-point fixtures',
+        passed: true,
+        durationMs: 0,
+      };
     }
     // Re-open the db that was just built
     const db = new GraphDb(repoPath);
@@ -227,7 +252,7 @@ export class EvalHarness {
     const analyzer = new FlowsAnalyzer(db);
     const flows = analyzer.entryPoints();
     const foundEntryNames = flows.map((f: { name: string }) => f.name);
-    const hits = expected.filter(e => foundEntryNames.some((n: string) => n.includes(e)));
+    const hits = expected.filter((e) => foundEntryNames.some((n: string) => n.includes(e)));
     const score = hits.length / expected.length;
     return {
       repo: repo.name,
@@ -243,9 +268,16 @@ export class EvalHarness {
     const start = Date.now();
     const { db, engine } = await this.buildGraph(repoPath);
     const allNodes = db.getAllNodes();
-    const sampleNode = allNodes.find(n => n.kind === 'function' || n.kind === 'class');
+    const sampleNode = allNodes.find((n) => n.kind === 'function' || n.kind === 'class');
     if (!sampleNode) {
-      return { repo: repo.name, benchmark: 'token_efficiency', score: 1, detail: 'no sample node found', passed: true, durationMs: 0 };
+      return {
+        repo: repo.name,
+        benchmark: 'token_efficiency',
+        score: 1,
+        detail: 'no sample node found',
+        passed: true,
+        durationMs: 0,
+      };
     }
     const bundleGen = new BundleGenerator(db, engine, repoPath);
     const bundleResult = bundleGen.generate(sampleNode.filePath, { depth: 2, includeSource: true });
@@ -271,13 +303,11 @@ export class EvalHarness {
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 
-  async runBenchmark(
-    benchmark: BenchmarkKind,
-    repoNames: string[],
-  ): Promise<BenchmarkResult[]> {
-    const repos = repoNames.length > 0
-      ? BENCHMARK_REPOS.filter(r => repoNames.includes(r.name))
-      : BENCHMARK_REPOS;
+  async runBenchmark(benchmark: BenchmarkKind, repoNames: string[]): Promise<BenchmarkResult[]> {
+    const repos =
+      repoNames.length > 0
+        ? BENCHMARK_REPOS.filter((r) => repoNames.includes(r.name))
+        : BENCHMARK_REPOS;
 
     const results: BenchmarkResult[] = [];
     for (const repo of repos) {
@@ -292,12 +322,24 @@ export class EvalHarness {
       try {
         let result: BenchmarkResult;
         switch (benchmark) {
-          case 'build_performance':  result = await this.runBuildPerformance(repo, repoPath); break;
-          case 'search_quality':     result = await this.runSearchQuality(repo, repoPath); break;
-          case 'impact_accuracy':    result = await this.runImpactAccuracy(repo, repoPath); break;
-          case 'flow_completeness':  result = await this.runFlowCompleteness(repo, repoPath); break;
-          case 'token_efficiency':   result = await this.runTokenEfficiency(repo, repoPath); break;
-          default: throw new Error(`Unknown benchmark: ${benchmark}`);
+          case 'build_performance':
+            result = await this.runBuildPerformance(repo, repoPath);
+            break;
+          case 'search_quality':
+            result = await this.runSearchQuality(repo, repoPath);
+            break;
+          case 'impact_accuracy':
+            result = await this.runImpactAccuracy(repo, repoPath);
+            break;
+          case 'flow_completeness':
+            result = await this.runFlowCompleteness(repo, repoPath);
+            break;
+          case 'token_efficiency':
+            result = await this.runTokenEfficiency(repo, repoPath);
+            break;
+          default:
+            // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+            throw new Error(`Unknown benchmark: ${benchmark}`);
         }
         results.push(result);
       } catch (e) {
@@ -316,8 +358,11 @@ export class EvalHarness {
 
   async runAll(repoNames: string[] = []): Promise<EvalReport> {
     const allBenchmarks: BenchmarkKind[] = [
-      'build_performance', 'search_quality', 'impact_accuracy',
-      'flow_completeness', 'token_efficiency',
+      'build_performance',
+      'search_quality',
+      'impact_accuracy',
+      'flow_completeness',
+      'token_efficiency',
     ];
     const results: BenchmarkResult[] = [];
     for (const b of allBenchmarks) {
@@ -329,15 +374,18 @@ export class EvalHarness {
 
   buildReport(results: BenchmarkResult[]): EvalReport {
     const kinds: BenchmarkKind[] = [
-      'build_performance', 'search_quality', 'impact_accuracy',
-      'flow_completeness', 'token_efficiency',
+      'build_performance',
+      'search_quality',
+      'impact_accuracy',
+      'flow_completeness',
+      'token_efficiency',
     ];
     const summary = {} as EvalReport['summary'];
     for (const k of kinds) {
-      const subset = results.filter(r => r.benchmark === k);
+      const subset = results.filter((r) => r.benchmark === k);
       summary[k] = {
         count: subset.length,
-        passed: subset.filter(r => r.passed).length,
+        passed: subset.filter((r) => r.passed).length,
         avgScore: subset.length ? subset.reduce((a, r) => a + r.score, 0) / subset.length : 0,
       };
     }
@@ -348,8 +396,9 @@ export class EvalHarness {
 
   toCsv(report: EvalReport): string {
     const header = 'repo,benchmark,score,passed,detail,durationMs';
-    const rows = report.results.map(r =>
-      `${r.repo},${r.benchmark},${r.score.toFixed(4)},${r.passed},"${r.detail.replace(/"/g, '""')}",${r.durationMs}`,
+    const rows = report.results.map(
+      (r) =>
+        `${r.repo},${r.benchmark},${r.score.toFixed(4)},${r.passed},"${r.detail.replace(/"/g, '""')}",${r.durationMs}`,
     );
     return [header, ...rows].join('\n');
   }

@@ -117,18 +117,25 @@ export class CommunityDetector {
     const communities = this.detectSync();
     const layers = this.engine.layers().slice(0, 20);
     const cycles = this.engine.detectCycles().slice(0, 5);
-    const orphans = this.engine.orphans().slice(0, 10).map((n) => n.filePath);
+    const orphans = this.engine
+      .orphans()
+      .slice(0, 10)
+      .map((n) => n.filePath);
 
     // Cross-community coupling
     const coupling = this.computeCoupling(communities);
 
     const healthNotes: string[] = [];
-    if (cycles.length > 0) healthNotes.push(`${cycles.length} circular dependency cycle(s) detected`);
-    if (orphans.length > 0) healthNotes.push(`${orphans.length} orphan file(s) with no connections`);
+    if (cycles.length > 0)
+      healthNotes.push(`${cycles.length} circular dependency cycle(s) detected`);
+    if (orphans.length > 0)
+      healthNotes.push(`${orphans.length} orphan file(s) with no connections`);
 
     const largestCommunity = communities[0];
     if (largestCommunity && largestCommunity.nodeCount > stats.files * 0.5) {
-      healthNotes.push('Over 50% of files belong to a single community — consider splitting into modules');
+      healthNotes.push(
+        'Over 50% of files belong to a single community — consider splitting into modules',
+      );
     }
 
     const heavyCoupling = coupling.filter((c) => c.edges > 10);
@@ -171,8 +178,12 @@ export class CommunityDetector {
 
   private runLouvainSync(level: number, parentLabel: string | null): Community[] {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { default: Graph } = require('graphology') as { default: new (opts: { type: string }) => IGraph };
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { default: Graph } = require('graphology') as {
+      default: new (opts: { type: string }) => IGraph;
+    };
     // eslint-disable-next-line @typescript-eslint/no-require-imports
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { default: louvain } = require('graphology-communities-louvain') as {
       default: (g: IGraph, opts?: { resolution?: number }) => Record<string, number>;
     };
@@ -182,7 +193,11 @@ export class CommunityDetector {
 
     const graph: IGraph = new Graph({ type: 'undirected' });
     for (const node of allNodes) {
-      graph.addNode(node.id, { label: node.name, filePath: node.filePath, language: node.language });
+      graph.addNode(node.id, {
+        label: node.name,
+        filePath: node.filePath,
+        language: node.language,
+      });
     }
 
     const allEdges = this.db.getAllEdges();
@@ -217,9 +232,7 @@ export class CommunityDetector {
     for (const [, memberIds] of groups) {
       if (memberIds.length < MIN_COMMUNITY_SIZE) continue;
 
-      const memberNodes = memberIds.map((id) => this.db.getNode(id)).filter(Boolean) as ReturnType<
-        GraphDb['getNode']
-      >[];
+      const memberNodes = memberIds.map((id) => this.db.getNode(id)).filter(Boolean);
       const validNodes = memberNodes.filter((n): n is NonNullable<typeof n> => n !== null);
 
       // Two-stage: split large communities with sub-graph Louvain
@@ -260,8 +273,12 @@ export class CommunityDetector {
   ): Community[] {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { default: Graph } = require('graphology') as { default: new (opts: { type: string }) => IGraph };
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { default: Graph } = require('graphology') as {
+        default: new (opts: { type: string }) => IGraph;
+      };
       // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { default: louvain } = require('graphology-communities-louvain') as {
         default: (g: IGraph, opts?: { resolution?: number }) => Record<string, number>;
       };
@@ -301,9 +318,9 @@ export class CommunityDetector {
 
       for (const [, memberIds] of groups) {
         if (memberIds.length < MIN_COMMUNITY_SIZE) continue;
-        const memberNodes = memberIds.map((id) => this.db.getNode(id)).filter(Boolean) as NonNullable<
-          ReturnType<GraphDb['getNode']>
-        >[];
+        const memberNodes = memberIds
+          .map((id) => this.db.getNode(id))
+          .filter(Boolean) as NonNullable<ReturnType<GraphDb['getNode']>>[];
         const files = [...new Set(memberNodes.map((n) => n.filePath))];
         const label = `${parentLabel}/${this.deriveName(memberNodes)}`;
         result.push({
@@ -403,9 +420,7 @@ export class CommunityDetector {
     return internal + external === 0 ? 1 : internal / (internal + external);
   }
 
-  private dominantLanguage(
-    nodes: NonNullable<ReturnType<GraphDb['getNode']>>[],
-  ): string | null {
+  private dominantLanguage(nodes: NonNullable<ReturnType<GraphDb['getNode']>>[]): string | null {
     const freq = new Map<string, number>();
     for (const n of nodes) {
       if (n.language) freq.set(n.language, (freq.get(n.language) ?? 0) + 1);
@@ -439,7 +454,9 @@ export class CommunityDetector {
     return hubs.sort((a, b) => b.fanIn - a.fanIn).slice(0, 5);
   }
 
-  private computeCoupling(communities: Community[]): Array<{ from: string; to: string; edges: number }> {
+  private computeCoupling(
+    communities: Community[],
+  ): Array<{ from: string; to: string; edges: number }> {
     const nodeToComm = new Map<string, string>();
     for (const comm of communities) {
       const nodes = this.db.getAllNodes().filter((n) => comm.files.includes(n.filePath));
@@ -477,7 +494,9 @@ export class CommunityDetector {
       if (p !== x) parent.set(x, find(p));
       return parent.get(x) ?? x;
     };
-    const union = (a: string, b: string): void => { parent.set(find(a), find(b)); };
+    const union = (a: string, b: string): void => {
+      parent.set(find(a), find(b));
+    };
 
     const fileNodes = this.db.getNodesByKind(['file']);
     for (const node of fileNodes) {

@@ -29,6 +29,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     if (this.pipeline) return;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { pipeline } = require('@xenova/transformers') as {
         pipeline: (task: string, model: string) => Promise<unknown>;
       };
@@ -44,7 +45,7 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     await this.load();
     const results: number[][] = [];
     for (const text of texts) {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-assignment
       const output = await this.pipeline(text, { pooling: 'mean', normalize: true });
       // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
       results.push(Array.from(output.data as Float32Array));

@@ -6,7 +6,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
-import type { GraphEdge, GraphNode, FileRecord, EmbeddingRecord, CommunityRecord } from '../types.js';
+import type {
+  GraphEdge,
+  GraphNode,
+  FileRecord,
+  EmbeddingRecord,
+  CommunityRecord,
+} from '../types.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -346,7 +352,14 @@ export class GraphDb {
        ON CONFLICT(id) DO UPDATE SET
          reason     = excluded.reason,
          updated_at = excluded.updated_at`,
-      [this.encEdgeId(edge.id), this.encId(edge.fromId), this.encId(edge.toId), edge.kind, edge.reason, edge.updatedAt],
+      [
+        this.encEdgeId(edge.id),
+        this.encId(edge.fromId),
+        this.encId(edge.toId),
+        edge.kind,
+        edge.reason,
+        edge.updatedAt,
+      ],
     );
   }
 
@@ -363,13 +376,19 @@ export class GraphDb {
   }
 
   getEdgesFromByKind(nodeId: string, kind: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE from_id = ? AND kind = ?', [this.encId(nodeId), kind]);
+    const rows = this.db.exec('SELECT * FROM edges WHERE from_id = ? AND kind = ?', [
+      this.encId(nodeId),
+      kind,
+    ]);
     if (!rows.length) return [];
     return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
   }
 
   getEdgesToByKind(nodeId: string, kind: string): GraphEdge[] {
-    const rows = this.db.exec('SELECT * FROM edges WHERE to_id = ? AND kind = ?', [this.encId(nodeId), kind]);
+    const rows = this.db.exec('SELECT * FROM edges WHERE to_id = ? AND kind = ?', [
+      this.encId(nodeId),
+      kind,
+    ]);
     if (!rows.length) return [];
     return rows[0].values.map((row) => this.rowToEdge(rows[0].columns, row));
   }
@@ -542,7 +561,10 @@ export class GraphDb {
   }
 
   updateNodeCommunity(nodeId: string, communityId: number | null): void {
-    this.db.run('UPDATE nodes SET community_id = ? WHERE id = ?', [communityId, this.encId(nodeId)]);
+    this.db.run('UPDATE nodes SET community_id = ? WHERE id = ?', [
+      communityId,
+      this.encId(nodeId),
+    ]);
   }
 
   getCommunities(level?: number): CommunityRecord[] {

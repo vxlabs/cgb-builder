@@ -102,7 +102,10 @@ export class RefactorAnalyzer {
       const inbound = this.db.getEdgesTo(node.id);
       if (inbound.length > 0) continue;
 
-      if (/\.(test|spec)\./i.test(node.filePath) || /\/(test|__tests?__|spec)\//i.test(node.filePath)) {
+      if (
+        /\.(test|spec)\./i.test(node.filePath) ||
+        /\/(test|__tests?__|spec)\//i.test(node.filePath)
+      ) {
         continue;
       }
 
@@ -199,8 +202,8 @@ export class RefactorAnalyzer {
     let definitionLine: number | null = null;
     try {
       const meta = JSON.parse(node.meta ?? '{}') as Record<string, unknown>;
-      if (typeof meta['line'] === 'number') definitionLine = meta['line'] as number;
-      else if (typeof meta['line_start'] === 'number') definitionLine = meta['line_start'] as number;
+      if (typeof meta['line'] === 'number') definitionLine = meta['line'];
+      else if (typeof meta['line_start'] === 'number') definitionLine = meta['line_start'];
     } catch {
       // ignore
     }

@@ -13,28 +13,90 @@ import * as path from 'path';
  */
 export const SECURITY_KEYWORDS: readonly string[] = [
   // Authentication & credentials
-  'auth', 'authenticate', 'authorization', 'login', 'logout', 'session',
-  'password', 'passwd', 'credentials', 'token', 'jwt', 'oauth', 'saml',
-  'secret', 'api_key', 'apikey', 'private_key', 'public_key', 'certificate',
+  'auth',
+  'authenticate',
+  'authorization',
+  'login',
+  'logout',
+  'session',
+  'password',
+  'passwd',
+  'credentials',
+  'token',
+  'jwt',
+  'oauth',
+  'saml',
+  'secret',
+  'api_key',
+  'apikey',
+  'private_key',
+  'public_key',
+  'certificate',
 
   // Cryptography
-  'crypto', 'encrypt', 'decrypt', 'hash', 'hmac', 'signature', 'sign',
-  'aes', 'rsa', 'sha', 'md5', 'bcrypt', 'argon', 'pbkdf',
+  'crypto',
+  'encrypt',
+  'decrypt',
+  'hash',
+  'hmac',
+  'signature',
+  'sign',
+  'aes',
+  'rsa',
+  'sha',
+  'md5',
+  'bcrypt',
+  'argon',
+  'pbkdf',
 
   // Access control
-  'permission', 'permissions', 'acl', 'role', 'admin', 'root', 'superuser',
-  'privilege', 'capabilities', 'policy', 'rbac', 'abac',
+  'permission',
+  'permissions',
+  'acl',
+  'role',
+  'admin',
+  'root',
+  'superuser',
+  'privilege',
+  'capabilities',
+  'policy',
+  'rbac',
+  'abac',
 
   // Injection / execution
-  'sql', 'query', 'inject', 'injection', 'eval', 'exec', 'execute',
-  'subprocess', 'shell', 'command', 'spawn', 'popen',
+  'sql',
+  'query',
+  'inject',
+  'injection',
+  'eval',
+  'exec',
+  'execute',
+  'subprocess',
+  'shell',
+  'command',
+  'spawn',
+  'popen',
 
   // Network / input
-  'cors', 'csrf', 'xss', 'sanitize', 'validate', 'input', 'request',
-  'response', 'header', 'cookie', 'referer', 'redirect',
+  'cors',
+  'csrf',
+  'xss',
+  'sanitize',
+  'validate',
+  'input',
+  'request',
+  'response',
+  'header',
+  'cookie',
+  'referer',
+  'redirect',
 
   // Sensitive data paths
-  'secret', 'env', '.env', 'config', 'settings',
+  'secret',
+  'env',
+  '.env',
+  'config',
+  'settings',
 ];
 
 // ─── File type risk maps ──────────────────────────────────────────────────────
@@ -161,7 +223,8 @@ export function scoreFile(
     blastRadiusScore + securityKeywordScore + fileTypeScore + changeSizeScore + testCoverageScore,
   );
 
-  const securityRelevant = securityKeywordScore >= 10 || HIGH_RISK_FILENAMES.some((re) => re.test(basename));
+  const securityRelevant =
+    securityKeywordScore >= 10 || HIGH_RISK_FILENAMES.some((re) => re.test(basename));
 
   return {
     filePath,

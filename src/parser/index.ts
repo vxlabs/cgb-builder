@@ -187,7 +187,12 @@ export class Parser {
   /** Discover all parseable source files under projectRoot */
   private async discoverFiles(): Promise<string[]> {
     const extensions = [
-      'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+      'ts',
+      'tsx',
+      'js',
+      'jsx',
+      'mjs',
+      'cjs',
       'cs',
       'py',
       'go',
@@ -195,8 +200,15 @@ export class Parser {
       'rs',
       'rb',
       'php',
-      'c', 'h', 'cpp', 'cc', 'cxx', 'hpp', 'hh',
-      'kt', 'kts',
+      'c',
+      'h',
+      'cpp',
+      'cc',
+      'cxx',
+      'hpp',
+      'hh',
+      'kt',
+      'kts',
     ];
     const pattern = `**/*.{${extensions.join(',')}}`;
 

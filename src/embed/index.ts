@@ -43,7 +43,6 @@ export function decodeVector(bytes: Uint8Array): number[] {
   return Array.from(f32);
 }
 
-
 // ─── Node text for embedding ──────────────────────────────────────────────────
 
 export function nodeToText(node: GraphNode): string {
@@ -108,7 +107,10 @@ export async function embedNodes(
 
 // ─── RRF merge ────────────────────────────────────────────────────────────────
 
-function rrfMerge(lists: Array<Array<{ id: string }>>, k = 60): Array<{ id: string; score: number }> {
+function rrfMerge(
+  lists: Array<Array<{ id: string }>>,
+  k = 60,
+): Array<{ id: string; score: number }> {
   const scores = new Map<string, number>();
   for (const list of lists) {
     list.forEach(({ id }, rank) => {
@@ -191,7 +193,9 @@ export async function hybridSearch(
       const scored: Array<{ id: string; score: number }> = [];
       for (const emb of db.getAllEmbeddings()) {
         const vec = decodeVector(emb.vector);
-        let dot = 0, magA = 0, magB = 0;
+        let dot = 0,
+          magA = 0,
+          magB = 0;
         for (let i = 0; i < Math.min(vec.length, qv.length); i++) {
           dot += vec[i] * qv[i];
           magA += vec[i] * vec[i];
@@ -210,10 +214,7 @@ export async function hybridSearch(
   const likeRanked = likeResults.map((n) => ({ id: n.id }));
 
   // 4. RRF merge
-  const merged = rrfMerge(
-    [bm25.map((r) => ({ id: r.id })), vectorRanked, likeRanked],
-    60,
-  );
+  const merged = rrfMerge([bm25.map((r) => ({ id: r.id })), vectorRanked, likeRanked], 60);
 
   // 5. Apply boosts and resolve nodes
   const results: EmbedResult[] = [];
@@ -225,7 +226,8 @@ export async function hybridSearch(
 
     // Query-aware kind boosting
     if (/^[A-Z]/.test(query) && node.kind === 'class') boostedScore *= 1.5;
-    if (/_/.test(query) && (node.kind === 'function' || node.kind === 'method')) boostedScore *= 1.5;
+    if (/_/.test(query) && (node.kind === 'function' || node.kind === 'method'))
+      boostedScore *= 1.5;
     if (/\./.test(query) && node.kind === 'file') boostedScore *= 2.0;
 
     // Context-file boost
@@ -354,22 +356,19 @@ export class EmbedSearcher {
   }
 
   private nodeTokens(node: GraphNode): string[] {
-    const text = [
-      node.name,
-      node.kind,
-      node.filePath,
-      node.description ?? '',
-    ].join(' ');
+    const text = [node.name, node.kind, node.filePath, node.description ?? ''].join(' ');
     return this.tokenize(text);
   }
 
   private tokenize(text: string): string[] {
-    return text
-      .toLowerCase()
-      // Split on non-word chars, camelCase, underscores
-      .replace(/([a-z])([A-Z])/g, '$1 $2')
-      .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 2 && t.length <= 40);
+    return (
+      text
+        .toLowerCase()
+        // Split on non-word chars, camelCase, underscores
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length >= 2 && t.length <= 40)
+    );
   }
 
   private termFrequency(tokens: string[]): Map<string, number> {
