@@ -217,6 +217,24 @@ export class GraphDb {
     return p.startsWith('./') ? path.join(this.root, p) : p;
   }
 
+  /** Rewrite import/reexport source paths inside a node's meta JSON (other meta is untouched). */
+  private mapMeta(meta: string, fn: (p: string) => string): string {
+    if (!meta || !meta.includes('"source"')) return meta;
+    try {
+      const obj = JSON.parse(meta) as Record<string, unknown>;
+      for (const key of ['imports', 'reexports']) {
+        const list = obj[key];
+        if (!Array.isArray(list)) continue;
+        for (const entry of list as Array<{ source?: unknown }>) {
+          if (entry && typeof entry.source === 'string') entry.source = fn(entry.source);
+        }
+      }
+      return JSON.stringify(obj);
+    } catch {
+      return meta;
+    }
+  }
+
   /** Node id `kind:path[#symbol]` -> stored form (path part encoded). */
   private encId(id: string): string {
     return this.mapIdPath(id, (p) => this.encPath(p));
@@ -375,7 +393,7 @@ export class GraphDb {
       node.description,
       node.isExternal ? 1 : 0,
       node.language ?? null,
-      node.meta,
+      this.mapMeta(node.meta, (p) => this.encPath(p)),
       node.updatedAt,
       node.startLine ?? null,
       node.endLine ?? null,
@@ -858,7 +876,7 @@ export class GraphDb {
       description: (obj['description'] as string) ?? '',
       isExternal: (obj['is_external'] as number) === 1,
       language: (obj['language'] as GraphNode['language']) ?? null,
-      meta: (obj['meta'] as string) ?? '{}',
+      meta: this.mapMeta((obj['meta'] as string) ?? '{}', (p) => this.decPath(p)),
       updatedAt: obj['updated_at'] as number,
       ...optionalNodeFields(obj),
     };

@@ -92,6 +92,8 @@ describe('GraphDb dbDir and portability', () => {
     // No absolute root path may leak into the persisted DB.
     const raw = fs.readFileSync(path.join(dbDir, 'graph.db')).toString('latin1');
     expect(raw).not.toContain(rootA);
+    expect(raw).not.toContain(JSON.stringify(rootA).slice(1, -1)); // JSON-escaped (meta)
+    expect(raw).not.toContain(path.basename(rootA));
     expect(raw).toContain('src/a.ts');
 
     // Same cache, different worktree root: incremental rescan skips every file.
