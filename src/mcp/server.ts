@@ -14,6 +14,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import { AsyncLocalStorage } from 'async_hooks';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -55,21 +56,10 @@ function readVersion(): string {
 
 const VERSION = readVersion();
 
-// ─── Service bootstrap ────────────────────────────────────────────────────────
+// ─── Server options ───────────────────────────────────────────────────────────
 
-<<<<<<< working
-interface Services {
-  root: string;
-  db: GraphDb;
-  engine: GraphEngine;
-  parser: Parser;
-  bundle: BundleGenerator;
-}
-
-async function getServices(root: string): Promise<Services> {
-=======
 export interface McpServerOptions {
-  /** Register only non-mutating tools and never write the DB or the filesystem. */
+  /** Serve only non-mutating tools and never write the DB or the filesystem. */
   readOnly?: boolean;
   /** Directory holding graph.db (overrides env CGB_DB_DIR and `<root>/.cgb`). */
   dbDir?: string;
@@ -81,6 +71,9 @@ export interface McpServerOptions {
 export const READ_ONLY_TOOLS: readonly string[] = [
   'cgb_deps',
   'cgb_impact',
+  'cgb_symbol',
+  'cgb_callers',
+  'cgb_callees',
   'cgb_search',
   'cgb_bundle',
   'cgb_stats',
@@ -103,27 +96,38 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   'cgb_embed_similar',
 ];
 
-let mcpOptions: McpServerOptions = {};
+/** Options of the running server; callTool() can override them per call. */
+let serverOptions: McpServerOptions = {};
+const callOptions = new AsyncLocalStorage<McpServerOptions>();
 
-async function getServices(root: string) {
->>>>>>> headless
+function opts(): McpServerOptions {
+  return callOptions.getStore() ?? serverOptions;
+}
+
+// ─── Service bootstrap ────────────────────────────────────────────────────────
+
+interface Services {
+  root: string;
+  db: GraphDb;
+  engine: GraphEngine;
+  parser: Parser;
+  bundle: BundleGenerator;
+}
+
+async function getServices(root: string): Promise<Services> {
   const { GraphDb } = await import('../graph/db.js');
   const { GraphEngine } = await import('../graph/engine.js');
   const { Parser } = await import('../parser/index.js');
   const { BundleGenerator } = await import('../bundle/generator.js');
 
-<<<<<<< working
-  const db = new GraphDb(root);
+  const { dbDir, readOnly } = opts();
+  const db = new GraphDb(root, { dbDir, readOnly });
   try {
     await db.init();
   } catch (e) {
     db.close();
     throw e;
   }
-=======
-  const db = new GraphDb(root, { dbDir: mcpOptions.dbDir, readOnly: mcpOptions.readOnly });
-  await db.init();
->>>>>>> headless
   const engine = new GraphEngine(db);
   const parser = new Parser(db, root);
   const bundle = new BundleGenerator(db, engine, root);
@@ -133,8 +137,8 @@ async function getServices(root: string) {
 /**
  * Open the graph for `args.root`, run fn, and always close the DB.
  * Unless needGraph is false, an empty graph yields a "Graph not built" error.
- * Unless fresh is false, changed files are re-parsed first (see freshness.ts); when that
- * is cut short the JSON result gets `stale: true`.
+ * Unless fresh is false (or the server is read-only), changed files are re-parsed first
+ * (see freshness.ts); when that is cut short the JSON result gets `stale: true`.
  */
 async function withGraph(
   args: { root?: string },
@@ -150,7 +154,7 @@ async function withGraph(
       return err(`Graph not built for ${root}`, 'Call cgb_init first');
     }
     let stale = false;
-    if (fresh && s.db.getStats().nodes > 0) {
+    if (fresh && !opts().readOnly && s.db.getStats().nodes > 0) {
       try {
         stale = (await ensureFresh(root, s.db)).skipped;
       } catch (e) {
@@ -663,7 +667,11 @@ async function handleSearch(args: SearchArgs) {
     if (useHybrid) {
       const { hybridSearch } = await import('../embed/index.js');
       const contextFiles = args.contextFiles?.map((f) => resolveTarget(root, f));
-      const hits = await hybridSearch(db, query, { limit: MAX_SEARCH, contextFiles });
+      const hits = await hybridSearch(db, query, {
+        limit: MAX_SEARCH,
+        contextFiles,
+        localOnly: opts().readOnly,
+      });
       const byId = new Map(db.getNodesByIds(hits.map((h) => h.id)).map((n) => [n.id, n]));
       for (const h of hits) {
         const n = byId.get(h.id);
@@ -988,9 +996,11 @@ async function handleCriticality(args: RootArg & PageArgs) {
 async function handleCommunities(args: RootArg & PageArgs) {
   return withGraph(args, async ({ root, db, engine }) => {
     const { CommunityDetector } = await import('../communities/index.js');
-<<<<<<< working
-    // side effect: writes community_id onto nodes
-    const { communities } = new CommunityDetector(db, engine).detectAndPersistWithResult();
+    const detector = new CommunityDetector(db, engine);
+    // side effect (unless read-only): writes community_id onto nodes
+    const communities = opts().readOnly
+      ? detector.detect()
+      : detector.detectAndPersistWithResult().communities;
     return ok(
       page(
         communities.map((c) => compactCommunity(root, c)),
@@ -998,18 +1008,6 @@ async function handleCommunities(args: RootArg & PageArgs) {
       ),
     );
   });
-=======
-    const detector = new CommunityDetector(db, engine);
-    if (mcpOptions.readOnly) {
-      return ok(detector.detect());
-    }
-    const communities = detector.detectAndPersist();
-    db.persist();
-    return ok(communities);
-  } finally {
-    db.close();
-  }
->>>>>>> headless
 }
 
 async function handleArchitecture(args: RootArg & PageArgs) {
@@ -1147,25 +1145,18 @@ async function handleRegistryRegister(args: RootArg & { name?: string }) {
 
 async function handleRegistryList(args: PageArgs) {
   const { RegistryManager } = await import('../registry/index.js');
-<<<<<<< working
-  return ok(page(new RegistryManager().load(), args));
-=======
-  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
-  const entries = registry.load();
-  return ok({ count: entries.length, repos: entries });
->>>>>>> headless
+  return ok(page(new RegistryManager(undefined, opts().readOnly).load(), args));
 }
 
 async function handleRegistrySearch(args: PageArgs & { query: string; maxPerRepo?: number }) {
   const { RegistryManager } = await import('../registry/index.js');
-<<<<<<< working
-  const results = await new RegistryManager().search(args.query, args.maxPerRepo ?? 10);
+  const readOnly = opts().readOnly;
+  const results = await new RegistryManager(undefined, readOnly).search(
+    args.query,
+    args.maxPerRepo ?? 10,
+    readOnly,
+  );
   return ok({ query: args.query, ...page(results, args) });
-=======
-  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
-  const results = await registry.search(query, maxPerRepo, mcpOptions.readOnly);
-  return ok({ query, count: results.length, results });
->>>>>>> headless
 }
 
 // ─── Embed handlers ───────────────────────────────────────────────────────────
@@ -1179,7 +1170,6 @@ async function handleEmbedBuild(args: RootArg & { provider?: string }) {
   });
 }
 
-<<<<<<< working
 async function handleEmbedSimilar(args: RootArg & PageArgs & { nodeId: string }) {
   return withGraph(args, async ({ root, db }) => {
     const { EmbedSearcher } = await import('../embed/index.js');
@@ -1191,11 +1181,16 @@ async function handleEmbedSimilar(args: RootArg & PageArgs & { nodeId: string })
 
 // ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-/** Run a tool by name. Exported for tests; the MCP CallTool handler delegates here. */
+/** Run a tool by name under the current options. Exported for tests. */
 export async function handleTool(
   name: string,
   args: Record<string, unknown> = {},
 ): Promise<ToolResult> {
+  const { readOnly, root } = opts();
+  if (readOnly && !READ_ONLY_TOOLS.includes(name)) {
+    return err(`Tool ${name} is not available in read-only mode.`);
+  }
+  if (args['root'] === undefined && root) args = { ...args, root };
   try {
     switch (name) {
       case 'cgb_init':
@@ -1264,36 +1259,31 @@ export async function handleTool(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return err(`Tool ${name} failed: ${message}`);
-=======
-async function handleEmbedSearch(args: {
-  root: string;
-  query: string;
-  limit?: number;
-  contextFiles?: string[];
-}) {
-  const { root, query, limit = 20, contextFiles } = args;
-  const { db } = await getServices(root);
-  try {
-    const { hybridSearch } = await import('../embed/index.js');
-    const results = await hybridSearch(db, query, { limit, contextFiles, localOnly: mcpOptions.readOnly });
-    return ok({ query, count: results.length, results });
-  } finally {
-    db.close();
   }
 }
 
-async function handleEmbedSimilar(args: { root: string; nodeId: string; limit?: number }) {
-  const { root, nodeId, limit = 10 } = args;
-  const { db } = await getServices(root);
-  try {
-    const { EmbedSearcher } = await import('../embed/index.js');
-    const searcher = new EmbedSearcher(db);
-    const results = searcher.findSimilar(nodeId, limit);
-    return ok({ nodeId, count: results.length, results });
-  } finally {
-    db.close();
->>>>>>> headless
-  }
+/** Run a tool under explicit options (e.g. read-only) without affecting other calls. */
+export async function callTool(
+  name: string,
+  args: Record<string, unknown> = {},
+  options: McpServerOptions = serverOptions,
+): Promise<ToolResult> {
+  return callOptions.run(normalizeOptions(options), () => handleTool(name, args));
+}
+
+/** Tool definitions served under the given options (read-only filters out mutating tools). */
+export function listTools(options: McpServerOptions = {}) {
+  if (!options.readOnly) return TOOLS;
+  const allowed = new Set(READ_ONLY_TOOLS);
+  return TOOLS.filter((t) => allowed.has(t.name));
+}
+
+function normalizeOptions(options: McpServerOptions): McpServerOptions {
+  return {
+    ...options,
+    root: options.root ? path.resolve(options.root) : undefined,
+    dbDir: options.dbDir ? path.resolve(options.dbDir) : undefined,
+  };
 }
 
 // ─── Prompt definitions ───────────────────────────────────────────────────────
@@ -1456,17 +1446,22 @@ function buildPreMergeCheckPrompt(root: string, base: string): string {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-<<<<<<< working
-export async function startMcpServer(): Promise<void> {
+export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
+  serverOptions = normalizeOptions(options);
   const server = new Server(
     { name: 'cgb', version: VERSION },
     { capabilities: { tools: {}, prompts: {} } },
   );
 
   // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: listTools(serverOptions),
+  }));
+  // Prompts drive mutating tools (cgb_init etc.), so none are served read-only.
   // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: serverOptions.readOnly ? [] : PROMPTS,
+  }));
 
   // eslint-disable-next-line @typescript-eslint/require-await -- async kept for API/signature compatibility
   server.setRequestHandler(GetPromptRequestSchema, async (request) => {
@@ -1524,172 +1519,6 @@ export async function startMcpServer(): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
     return handleTool(name, args);
-=======
-/** Dispatch a tool call under the given options. Exported for tests and embedding. */
-export async function callTool(
-  name: string,
-  rawArgs: Record<string, unknown>,
-  options: McpServerOptions = mcpOptions,
-) {
-  const previous = mcpOptions;
-  mcpOptions = options;
-  try {
-    if (options.readOnly && !READ_ONLY_TOOLS.includes(name)) {
-      return err(`Tool ${name} is not available in read-only mode.`);
-    }
-    const args: Record<string, unknown> = { ...rawArgs };
-    if (args['root'] === undefined && options.root) args['root'] = options.root;
-    try {
-      switch (name) {
-        case 'cgb_init':
-          return await handleInit(args as Parameters<typeof handleInit>[0]);
-        case 'cgb_deps':
-          return await handleDeps(args as Parameters<typeof handleDeps>[0]);
-        case 'cgb_impact':
-          return await handleImpact(args as Parameters<typeof handleImpact>[0]);
-        case 'cgb_search':
-          return await handleSearch(args as Parameters<typeof handleSearch>[0]);
-        case 'cgb_bundle':
-          return await handleBundle(args as Parameters<typeof handleBundle>[0]);
-        case 'cgb_stats':
-          return await handleStats(args as Parameters<typeof handleStats>[0]);
-        case 'cgb_path':
-          return await handlePath(args as Parameters<typeof handlePath>[0]);
-        case 'cgb_detect_changes':
-          return await handleDetectChanges(args as Parameters<typeof handleDetectChanges>[0]);
-        case 'cgb_review_context':
-          return await handleReviewContext(args as Parameters<typeof handleReviewContext>[0]);
-        // Flows
-        case 'cgb_large_functions':
-          return await handleLargeFunctions(args as Parameters<typeof handleLargeFunctions>[0]);
-        case 'cgb_entry_points':
-          return await handleEntryPoints(args as Parameters<typeof handleEntryPoints>[0]);
-        case 'cgb_call_chain':
-          return await handleCallChain(args as Parameters<typeof handleCallChain>[0]);
-        case 'cgb_criticality':
-          return await handleCriticality(args as Parameters<typeof handleCriticality>[0]);
-        // Communities
-        case 'cgb_communities':
-          return await handleCommunities(args as Parameters<typeof handleCommunities>[0]);
-        case 'cgb_architecture':
-          return await handleArchitecture(args as Parameters<typeof handleArchitecture>[0]);
-        // Refactor
-        case 'cgb_dead_code':
-          return await handleDeadCode(args as Parameters<typeof handleDeadCode>[0]);
-        case 'cgb_rename_preview':
-          return await handleRenamePreview(args as Parameters<typeof handleRenamePreview>[0]);
-        case 'cgb_apply_refactor':
-          return await handleApplyRefactor(args as Parameters<typeof handleApplyRefactor>[0]);
-        case 'cgb_refactor_suggest':
-          return await handleRefactorSuggest(args as Parameters<typeof handleRefactorSuggest>[0]);
-        // Wiki
-        case 'cgb_wiki_generate':
-          return await handleWikiGenerate(args as Parameters<typeof handleWikiGenerate>[0]);
-        case 'cgb_wiki_section':
-          return await handleWikiSection(args as Parameters<typeof handleWikiSection>[0]);
-        // Registry
-        case 'cgb_registry_register':
-          return await handleRegistryRegister(args as Parameters<typeof handleRegistryRegister>[0]);
-        case 'cgb_registry_list':
-          return await handleRegistryList();
-        case 'cgb_registry_search':
-          return await handleRegistrySearch(args as Parameters<typeof handleRegistrySearch>[0]);
-        // Embed
-        case 'cgb_embed_build':
-          return await handleEmbedBuild(args as Parameters<typeof handleEmbedBuild>[0]);
-        case 'cgb_embed_search':
-          return await handleEmbedSearch(args as Parameters<typeof handleEmbedSearch>[0]);
-        case 'cgb_embed_similar':
-          return await handleEmbedSimilar(args as Parameters<typeof handleEmbedSimilar>[0]);
-        default:
-          return err(`Unknown tool: ${name}`);
-      }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      return err(`Tool ${name} failed: ${message}`);
-    }
-  } finally {
-    mcpOptions = previous;
-  }
-}
-
-/** Tool definitions served under the given options (read-only mode filters out mutating tools). */
-export function listTools(options: McpServerOptions = {}) {
-  if (!options.readOnly) return TOOLS;
-  const allowed = new Set(READ_ONLY_TOOLS);
-  return TOOLS.filter((t) => allowed.has(t.name)).map((t) => ({
-    ...t,
-    inputSchema: {
-      ...t.inputSchema,
-      // `root` can come from --root in read-only mode
-      required: options.root
-        ? (t.inputSchema as { required?: string[] }).required?.filter((r) => r !== 'root')
-        : (t.inputSchema as { required?: string[] }).required,
-    },
-  }));
-}
-
-export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
-  mcpOptions = {
-    ...options,
-    root: options.root ? path.resolve(options.root) : undefined,
-    dbDir: options.dbDir ? path.resolve(options.dbDir) : undefined,
-  };
-  const server = new Server({ name: 'cgb', version: '1.2.0' }, { capabilities: { tools: {}, prompts: {} } });
-
-  // List available tools
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(mcpOptions) }));
-
-  // List available prompts (prompts reference mutating tools, so none are served read-only)
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: mcpOptions.readOnly ? [] : PROMPTS,
-  }));
-
-  // Resolve a prompt by name
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    const { name, arguments: pArgs = {} } = request.params;
-    const root: string = (pArgs['root'] as string) ?? '';
-    const base: string = (pArgs['base'] as string) ?? 'main';
-
-    switch (name) {
-      case 'review_changes':
-        return {
-          description: 'Code-review prompt with cgb context',
-          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
-        };
-      case 'architecture_map':
-        return {
-          description: 'Architecture mapping prompt',
-          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
-        };
-      case 'debug_issue': {
-        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
-        const entry: string | undefined = pArgs['entry'] as string | undefined;
-        return {
-          description: 'Debugging prompt with call-chain tracing',
-          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
-        };
-      }
-      case 'onboard_developer':
-        return {
-          description: 'Developer onboarding guide',
-          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
-        };
-      case 'pre_merge_check':
-        return {
-          description: 'Pre-merge quality checklist',
-          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
-        };
-      default:
-        throw new Error(`Unknown prompt: ${name}`);
-    }
-  });
-
-  // Handle tool calls
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args = {} } = request.params;
-    return callTool(name, args as Record<string, unknown>, mcpOptions);
->>>>>>> headless
   });
 
   const transport = new StdioServerTransport();

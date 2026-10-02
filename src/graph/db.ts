@@ -1,6 +1,6 @@
 /**
  * SQLite-backed graph database using better-sqlite3 (native, on-disk, WAL).
- * Stores nodes, edges, and file metadata in <root>/.cgb/graph.db.
+ * Stores nodes, edges, and file metadata in <dbDir>/graph.db (default <root>/.cgb).
  *
  * Design notes:
  *  - Edges have NO foreign keys / cascades. Re-parsing a file removes that file's
@@ -8,6 +8,9 @@
  *    `deleteDanglingEdges()` prunes edges whose endpoints no longer exist.
  *  - The DB is derived data: on SCHEMA_VERSION mismatch all tables are dropped
  *    and recreated.
+ *  - Paths and node ids are stored relative to the project root with POSIX separators, so a
+ *    cached DB is valid for any worktree (and OS) of the same repository. The in-memory API
+ *    still exposes absolute, native paths.
  */
 
 import * as fs from 'fs';
@@ -25,7 +28,7 @@ import { warnOnce, debug } from '../util/log.js';
 import { splitIdentifier } from '../parser/utils.js';
 
 /** Stored in PRAGMA user_version. Bump to force a drop-and-recreate. */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -157,19 +160,94 @@ function optionalNodeFields(obj: Row): Partial<GraphNode> {
   return out;
 }
 
+const IS_WIN = process.platform === 'win32';
+
 // ─── GraphDb class ────────────────────────────────────────────────────────────
+
+export interface GraphDbOptions {
+  /** Directory holding graph.db. Overrides env CGB_DB_DIR and the default `<root>/.cgb`. */
+  dbDir?: string;
+  /** Open an existing DB read-only: never create directories or write the file. */
+  readOnly?: boolean;
+}
 
 export class GraphDb {
   private db!: Database.Database;
   private dbPath: string;
   private stmts = new Map<string, Database.Statement>();
+  private readonly root: string;
+  private readonly rootPrefix: string;
+  private readonly readOnly: boolean;
 
-  constructor(projectRoot: string) {
-    const cgbDir = path.join(projectRoot, '.cgb');
-    if (!fs.existsSync(cgbDir)) {
+  /**
+   * @param projectRoot Project root; stored paths are relative to it.
+   * @param options     `dbDir` overrides the DB directory (precedence: option > env CGB_DB_DIR >
+   *                    `<root>/.cgb`). `readOnly` never creates directories or writes the file.
+   */
+  constructor(projectRoot: string, options: GraphDbOptions = {}) {
+    this.root = path.resolve(projectRoot);
+    this.rootPrefix = this.root.endsWith(path.sep) ? this.root : this.root + path.sep;
+    this.readOnly = options.readOnly ?? false;
+    const configured = options.dbDir || process.env['CGB_DB_DIR'] || undefined;
+    const cgbDir = configured ? path.resolve(configured) : path.join(this.root, '.cgb');
+    if (!this.readOnly && !fs.existsSync(cgbDir)) {
       fs.mkdirSync(cgbDir, { recursive: true });
     }
     this.dbPath = path.join(cgbDir, 'graph.db');
+  }
+
+  // ─── Path portability (root-relative POSIX on disk, absolute in memory) ────
+
+  /**
+   * Absolute path under the root -> `./`-prefixed root-relative POSIX path; anything else is
+   * stored unchanged. The `./` marker lets decPath touch only what encPath rewrote.
+   */
+  private encPath(p: string): string {
+    if (!p) return p;
+    const head = p.slice(0, this.rootPrefix.length);
+    const under = IS_WIN
+      ? head.replace(/\//g, '\\').toLowerCase() === this.rootPrefix.toLowerCase()
+      : head === this.rootPrefix;
+    if (!under) return p;
+    const rel = p.slice(this.rootPrefix.length);
+    return './' + (IS_WIN ? rel.replace(/\\/g, '/') : rel);
+  }
+
+  private decPath(p: string): string {
+    return p.startsWith('./') ? path.join(this.root, p) : p;
+  }
+
+  /** Node id `kind:path[#symbol]` -> stored form (path part encoded). */
+  private encId(id: string): string {
+    return this.mapIdPath(id, (p) => this.encPath(p));
+  }
+
+  private decId(id: string): string {
+    return this.mapIdPath(id, (p) => this.decPath(p));
+  }
+
+  private mapIdPath(id: string, fn: (p: string) => string): string {
+    if (id.startsWith('external_dep:')) return id;
+    const colon = id.indexOf(':');
+    if (colon < 0) return id;
+    const rest = id.slice(colon + 1);
+    const hash = rest.indexOf('#');
+    const p = hash < 0 ? rest : rest.slice(0, hash);
+    const sym = hash < 0 ? '' : rest.slice(hash);
+    return `${id.slice(0, colon + 1)}${fn(p)}${sym}`;
+  }
+
+  /** Edge id `from|kind|to`. */
+  private encEdgeId(id: string): string {
+    const parts = id.split('|');
+    if (parts.length !== 3) return id;
+    return `${this.encId(parts[0])}|${parts[1]}|${this.encId(parts[2])}`;
+  }
+
+  private decEdgeId(id: string): string {
+    const parts = id.split('|');
+    if (parts.length !== 3) return id;
+    return `${this.decId(parts[0])}|${parts[1]}|${this.decId(parts[2])}`;
   }
 
   /** Open the database, set pragmas, and ensure the schema is current. */
@@ -177,6 +255,10 @@ export class GraphDb {
   async init(): Promise<void> {
     if (this.db && this.db.open) return;
     this.stmts.clear();
+    if (this.readOnly) {
+      this.openReadOnly();
+      return;
+    }
     this.db = new Database(this.dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
@@ -202,6 +284,23 @@ export class GraphDb {
       this.db.exec(SCHEMA_CORE);
     }
     debug('db', `opened ${this.dbPath}`);
+  }
+
+  private openReadOnly(): void {
+    if (!fs.existsSync(this.dbPath)) {
+      throw new Error(`Graph database not found at ${this.dbPath}. Run \`cgb init\` first.`);
+    }
+    this.db = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+    this.db.pragma('busy_timeout = 5000');
+    const version = this.db.pragma('user_version', { simple: true }) as number;
+    if (version !== SCHEMA_VERSION) {
+      this.db.close();
+      throw new Error(
+        `graph.db at ${this.dbPath} has schema version ${version}, expected ${SCHEMA_VERSION}; ` +
+          'rebuild it with `cgb init` (read-only mode cannot migrate)',
+      );
+    }
+    debug('db', `opened ${this.dbPath} (read-only)`);
   }
 
   private dropAll(): void {
@@ -241,7 +340,7 @@ export class GraphDb {
     return this.db.transaction(fn)();
   }
 
-  /** Returns the .cgb/ directory that contains the database file. */
+  /** Returns the directory that contains the database file. */
   getDbDir(): string {
     return path.dirname(this.dbPath);
   }
@@ -269,10 +368,10 @@ export class GraphDb {
          exported    = excluded.exported,
          modifiers   = excluded.modifiers`,
     ).run(
-      node.id,
+      this.encId(node.id),
       node.kind,
       node.name,
-      node.filePath,
+      this.encPath(node.filePath),
       node.description,
       node.isExternal ? 1 : 0,
       node.language ?? null,
@@ -285,13 +384,14 @@ export class GraphDb {
       node.exported === undefined ? null : node.exported ? 1 : 0,
       node.modifiers && node.modifiers.length > 0 ? JSON.stringify(node.modifiers) : null,
     );
-    const rowid = (this.stmt('SELECT rowid AS r FROM nodes WHERE id = ?').get(node.id) as Row)[
+    const id = this.encId(node.id);
+    const rowid = (this.stmt('SELECT rowid AS r FROM nodes WHERE id = ?').get(id) as Row)[
       'r'
     ] as number;
-    this.writeFtsRow(rowid, node);
+    this.writeFtsRow(rowid, { ...node, id, filePath: this.encPath(node.filePath) });
   }
 
-  /** Replace the FTS row for a node (FTS rowid == nodes.rowid). */
+  /** Replace the FTS row for a node (FTS rowid == nodes.rowid). Takes the stored id/path. */
   private writeFtsRow(
     rowid: number,
     n: Pick<GraphNode, 'id' | 'name' | 'filePath' | 'signature' | 'doc'>,
@@ -312,21 +412,23 @@ export class GraphDb {
   }
 
   getNode(id: string): GraphNode | null {
-    const row = this.stmt('SELECT * FROM nodes WHERE id = ?').get(id) as Row | undefined;
+    const row = this.stmt('SELECT * FROM nodes WHERE id = ?').get(this.encId(id)) as
+      | Row
+      | undefined;
     return row ? this.rowToNode(row) : null;
   }
 
   getNodesByFile(filePath: string): GraphNode[] {
-    return (this.stmt('SELECT * FROM nodes WHERE file_path = ?').all(filePath) as Row[]).map((r) =>
-      this.rowToNode(r),
-    );
+    return (
+      this.stmt('SELECT * FROM nodes WHERE file_path = ?').all(this.encPath(filePath)) as Row[]
+    ).map((r) => this.rowToNode(r));
   }
 
   /** Fetch nodes by ID (chunked IN lists). Order is not guaranteed. */
   getNodesByIds(ids: string[]): GraphNode[] {
     const out: GraphNode[] = [];
     for (let i = 0; i < ids.length; i += IN_CHUNK) {
-      const chunk = ids.slice(i, i + IN_CHUNK);
+      const chunk = ids.slice(i, i + IN_CHUNK).map((id) => this.encId(id));
       const ph = chunk.map(() => '?').join(', ');
       const rows = this.stmt(`SELECT * FROM nodes WHERE id IN (${ph})`).all(...chunk) as Row[];
       for (const r of rows) out.push(this.rowToNode(r));
@@ -400,8 +502,8 @@ export class GraphDb {
   deleteNodesByFile(filePath: string): void {
     this.stmt(
       'DELETE FROM nodes_fts WHERE rowid IN (SELECT rowid FROM nodes WHERE file_path = ?)',
-    ).run(filePath);
-    this.stmt('DELETE FROM nodes WHERE file_path = ?').run(filePath);
+    ).run(this.encPath(filePath));
+    this.stmt('DELETE FROM nodes WHERE file_path = ?').run(this.encPath(filePath));
   }
 
   // ─── Edge Operations ───────────────────────────────────────────────────────
@@ -413,37 +515,50 @@ export class GraphDb {
        ON CONFLICT(id) DO UPDATE SET
          reason     = excluded.reason,
          updated_at = excluded.updated_at`,
-    ).run(edge.id, edge.fromId, edge.toId, edge.kind, edge.reason, edge.updatedAt);
-  }
-
-  getEdgesFrom(nodeId: string): GraphEdge[] {
-    return (this.stmt('SELECT * FROM edges WHERE from_id = ?').all(nodeId) as Row[]).map((r) =>
-      this.rowToEdge(r),
+    ).run(
+      this.encEdgeId(edge.id),
+      this.encId(edge.fromId),
+      this.encId(edge.toId),
+      edge.kind,
+      edge.reason,
+      edge.updatedAt,
     );
   }
 
+  getEdgesFrom(nodeId: string): GraphEdge[] {
+    return (
+      this.stmt('SELECT * FROM edges WHERE from_id = ?').all(this.encId(nodeId)) as Row[]
+    ).map((r) => this.rowToEdge(r));
+  }
+
   getEdgesTo(nodeId: string): GraphEdge[] {
-    return (this.stmt('SELECT * FROM edges WHERE to_id = ?').all(nodeId) as Row[]).map((r) =>
-      this.rowToEdge(r),
+    return (this.stmt('SELECT * FROM edges WHERE to_id = ?').all(this.encId(nodeId)) as Row[]).map(
+      (r) => this.rowToEdge(r),
     );
   }
 
   getEdgesFromByKind(nodeId: string, kind: string): GraphEdge[] {
     return (
-      this.stmt('SELECT * FROM edges WHERE from_id = ? AND kind = ?').all(nodeId, kind) as Row[]
+      this.stmt('SELECT * FROM edges WHERE from_id = ? AND kind = ?').all(
+        this.encId(nodeId),
+        kind,
+      ) as Row[]
     ).map((r) => this.rowToEdge(r));
   }
 
   getEdgesToByKind(nodeId: string, kind: string): GraphEdge[] {
     return (
-      this.stmt('SELECT * FROM edges WHERE to_id = ? AND kind = ?').all(nodeId, kind) as Row[]
+      this.stmt('SELECT * FROM edges WHERE to_id = ? AND kind = ?').all(
+        this.encId(nodeId),
+        kind,
+      ) as Row[]
     ).map((r) => this.rowToEdge(r));
   }
 
   /** Delete OUTGOING edges of every node in filePath. Incoming edges are kept. */
   deleteEdgesByFile(filePath: string): void {
     this.stmt('DELETE FROM edges WHERE from_id IN (SELECT id FROM nodes WHERE file_path = ?)').run(
-      filePath,
+      this.encPath(filePath),
     );
   }
 
@@ -471,7 +586,7 @@ export class GraphDb {
          edge_count   = excluded.edge_count,
          parsed_at    = excluded.parsed_at`,
     ).run(
-      record.filePath,
+      this.encPath(record.filePath),
       record.language,
       record.contentHash,
       record.mtime,
@@ -482,7 +597,7 @@ export class GraphDb {
   }
 
   getFile(filePath: string): FileRecord | null {
-    const row = this.stmt('SELECT * FROM files WHERE file_path = ?').get(filePath) as
+    const row = this.stmt('SELECT * FROM files WHERE file_path = ?').get(this.encPath(filePath)) as
       | Row
       | undefined;
     return row ? this.rowToFile(row) : null;
@@ -497,7 +612,7 @@ export class GraphDb {
   deleteFile(filePath: string): void {
     this.deleteEdgesByFile(filePath);
     this.deleteNodesByFile(filePath);
-    this.stmt('DELETE FROM files WHERE file_path = ?').run(filePath);
+    this.stmt('DELETE FROM files WHERE file_path = ?').run(this.encPath(filePath));
   }
 
   // ─── Stats ─────────────────────────────────────────────────────────────────
@@ -562,7 +677,7 @@ export class GraphDb {
     };
     const best = new Map<string, Hit>();
     const add = (r: Row, score: number, matchedBy: Hit['matchedBy']): void => {
-      const id = r['id'] as string;
+      const id = this.decId(r['id'] as string);
       const prev = best.get(id);
       if (!prev || prev.score < score) {
         best.set(id, {
@@ -661,11 +776,11 @@ export class GraphDb {
          vector    = excluded.vector,
          text_hash = excluded.text_hash,
          provider  = excluded.provider`,
-    ).run(record.nodeId, Buffer.from(record.vector), record.textHash, record.provider);
+    ).run(this.encId(record.nodeId), Buffer.from(record.vector), record.textHash, record.provider);
   }
 
   getEmbedding(nodeId: string): EmbeddingRecord | null {
-    const row = this.stmt('SELECT * FROM embeddings WHERE node_id = ?').get(nodeId) as
+    const row = this.stmt('SELECT * FROM embeddings WHERE node_id = ?').get(this.encId(nodeId)) as
       | Row
       | undefined;
     return row ? this.rowToEmbedding(row) : null;
@@ -678,7 +793,7 @@ export class GraphDb {
   }
 
   deleteEmbedding(nodeId: string): void {
-    this.stmt('DELETE FROM embeddings WHERE node_id = ?').run(nodeId);
+    this.stmt('DELETE FROM embeddings WHERE node_id = ?').run(this.encId(nodeId));
   }
 
   getEmbeddingCount(): number {
@@ -710,7 +825,10 @@ export class GraphDb {
   }
 
   updateNodeCommunity(nodeId: string, communityId: number | null): void {
-    this.stmt('UPDATE nodes SET community_id = ? WHERE id = ?').run(communityId, nodeId);
+    this.stmt('UPDATE nodes SET community_id = ? WHERE id = ?').run(
+      communityId,
+      this.encId(nodeId),
+    );
   }
 
   getCommunities(level?: number): CommunityRecord[] {
@@ -733,10 +851,10 @@ export class GraphDb {
 
   private rowToNode(obj: Row): GraphNode {
     return {
-      id: obj['id'] as string,
+      id: this.decId(obj['id'] as string),
       kind: obj['kind'] as GraphNode['kind'],
       name: obj['name'] as string,
-      filePath: obj['file_path'] as string,
+      filePath: this.decPath(obj['file_path'] as string),
       description: (obj['description'] as string) ?? '',
       isExternal: (obj['is_external'] as number) === 1,
       language: (obj['language'] as GraphNode['language']) ?? null,
@@ -748,9 +866,9 @@ export class GraphDb {
 
   private rowToEdge(obj: Row): GraphEdge {
     return {
-      id: obj['id'] as string,
-      fromId: obj['from_id'] as string,
-      toId: obj['to_id'] as string,
+      id: this.decEdgeId(obj['id'] as string),
+      fromId: this.decId(obj['from_id'] as string),
+      toId: this.decId(obj['to_id'] as string),
       kind: obj['kind'] as GraphEdge['kind'],
       reason: (obj['reason'] as string) ?? '',
       updatedAt: obj['updated_at'] as number,
@@ -760,7 +878,7 @@ export class GraphDb {
   private rowToEmbedding(obj: Row): EmbeddingRecord {
     const v = obj['vector'] as Buffer;
     return {
-      nodeId: obj['node_id'] as string,
+      nodeId: this.decId(obj['node_id'] as string),
       // Copy into a standalone Uint8Array (Buffer may be a view into a shared pool)
       vector: new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength)),
       textHash: obj['text_hash'] as string,
@@ -784,7 +902,7 @@ export class GraphDb {
 
   private rowToFile(obj: Row): FileRecord {
     return {
-      filePath: obj['file_path'] as string,
+      filePath: this.decPath(obj['file_path'] as string),
       language: obj['language'] as FileRecord['language'],
       contentHash: obj['content_hash'] as string,
       mtime: obj['mtime'] as number,

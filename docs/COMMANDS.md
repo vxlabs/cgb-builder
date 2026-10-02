@@ -7,6 +7,11 @@
 | `--help` | Show help |
 | `--version` | Print version |
 
+Every command that reads or writes the graph also accepts `-r, --root <path>` and
+`--db-dir <path>` (directory holding `graph.db`; precedence: flag > env `CGB_DB_DIR` >
+`<root>/.cgb`). Paths are stored root-relative, so one `--db-dir` can be shared by every
+worktree of a repository.
+
 ---
 
 ## `cgb init [root]`
@@ -92,8 +97,10 @@ Show entry points and critical call chains.
 
 | Option | Description |
 |--------|-------------|
-| `--chain <entry>` | Trace the call chain from a specific entry point |
-| `--top <n>` | Top N critical nodes (default: 10) |
+| `--chain <entry>` | Trace the call chain from a node id, file path or symbol name |
+| `--depth <n>` | Max depth for `--chain` (default: 5) |
+| `--top <n>` | Max entries per list (default: 20) |
+| `--json` | Print `{ entryPoints, criticalNodes, largeFunctions }` (or the chain) as root-relative JSON |
 
 ---
 
@@ -103,8 +110,9 @@ Detect and display architectural communities.
 
 | Option | Description |
 |--------|-------------|
-| `--top <n>` | Show top N communities (default: 10) |
-| `--overview` | Print single-paragraph architecture overview |
+| `--top <n>` | Only show the N largest communities |
+| `--overview` | Show the architecture overview (layers, cycles, coupling, health) instead |
+| `--json` | Print as root-relative JSON |
 
 ---
 
@@ -126,6 +134,7 @@ Generate Markdown documentation from graph communities.
 |--------|---------|-------------|
 | `--out <dir>` | `./wiki` | Output directory |
 | `--top <n>` | `10` | Communities to document |
+| `--json` | — | Print `[{ communityId, title, files, markdown }]` to stdout instead of writing files (root-relative, no timestamps) |
 
 ---
 
@@ -208,7 +217,12 @@ cgb update [files...] [-r root] [--from-hook]
 Start the MCP server (used by AI agents).
 
 ```
-cgb mcp [-r, --root <path>]
+cgb mcp [-r, --root <path>] [--db-dir <path>] [--read-only]
 ```
 
 `--root` sets the default project root (exported as `CGB_ROOT`); otherwise `CGB_ROOT` or the cwd is used.
+
+`--read-only` serves only non-mutating tools (no `cgb_init`, `cgb_apply_refactor`,
+`cgb_wiki_generate`, `cgb_registry_register`, `cgb_embed_build`), skips auto-refresh,
+never writes the DB or the filesystem, uses only local embeddings and lists no prompts.
+The DB must already exist (build it with `cgb init`).

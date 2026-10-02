@@ -22,6 +22,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
     "dev": "ts-node src/cli/index.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",

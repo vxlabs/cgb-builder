@@ -131,7 +131,20 @@ falls back to a TF-IDF centroid query vector.
 ## Versioning
 
 The schema version is stored in `PRAGMA user_version` and exported as `SCHEMA_VERSION`
-(`src/graph/db.ts`). Current version: **2** (v2 added the metadata columns and `nodes_fts`).
+(`src/graph/db.ts`). Current version: **3** (v2 added the metadata columns and `nodes_fts`;
+v3 stores paths and node ids root-relative, see below).
+
+## Path storage
+
+Paths under the project root are stored as `./`-prefixed, root-relative POSIX paths
+(`file_path = './src/a.ts'`, `id = 'function:./src/a.ts#a'`, edge ids likewise); anything
+outside the root, and `external_dep:` ids, is stored unchanged. `GraphDb` converts at the
+boundary, so callers always see absolute native paths. One DB therefore serves every worktree
+(and OS) of a repository; pass `dbDir` / `--db-dir` / `CGB_DB_DIR` to share it.
+
+`new GraphDb(root, { readOnly: true })` opens an existing DB with `readonly` +
+`fileMustExist`, never creates directories, and throws instead of migrating when the schema
+version differs.
 
 Policy: the graph is derived data, so there are no data migrations. When the stored version
 differs from `SCHEMA_VERSION` (including databases written by older sql.js builds, which have

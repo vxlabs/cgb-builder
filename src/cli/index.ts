@@ -52,45 +52,52 @@ program
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
   .option('-f, --force', 'Force re-parse all files even if unchanged', false)
   .option('--watch', 'Keep watching for file changes after initial scan', false)
-  .action(async (pathArg: string | undefined, options: { root?: string; dbDir?: string; force: boolean; watch: boolean }) => {
-    const root = resolveRoot({ root: options.root ?? pathArg });
-    console.log(`📊 Initializing graph for: ${root}`);
+  .action(
+    async (
+      pathArg: string | undefined,
+      options: { root?: string; dbDir?: string; force: boolean; watch: boolean },
+    ) => {
+      const root = resolveRoot({ root: options.root ?? pathArg });
+      console.log(`📊 Initializing graph for: ${root}`);
 
-    const { db, parser, engine } = await getServices(root, options.dbDir);
+      const { db, parser, engine } = await getServices(root, options.dbDir);
 
-    console.log('🔍 Scanning files…');
-    const result = await parser.scanAll(options.force);
+      console.log('🔍 Scanning files…');
+      const result = await parser.scanAll(options.force);
 
-    const stats = db.getStats();
-    console.log(`\n✅ Done in ${result.durationMs}ms`);
-    console.log(`   Parsed:  ${result.parsed} files`);
-    console.log(`   Skipped: ${result.skipped} files (unchanged)`);
-    console.log(`   Errors:  ${result.errors.length} files`);
-    console.log(`\n   Graph:   ${stats.files} files · ${stats.nodes} nodes · ${stats.edges} edges`);
+      const stats = db.getStats();
+      console.log(`\n✅ Done in ${result.durationMs}ms`);
+      console.log(`   Parsed:  ${result.parsed} files`);
+      console.log(`   Skipped: ${result.skipped} files (unchanged)`);
+      console.log(`   Errors:  ${result.errors.length} files`);
+      console.log(
+        `\n   Graph:   ${stats.files} files · ${stats.nodes} nodes · ${stats.edges} edges`,
+      );
 
-    if (result.errors.length > 0) {
-      console.log('\nErrors:');
-      for (const e of result.errors.slice(0, 10)) {
-        console.log(`  ✗ ${e.filePath}: ${e.error}`);
+      if (result.errors.length > 0) {
+        console.log('\nErrors:');
+        for (const e of result.errors.slice(0, 10)) {
+          console.log(`  ✗ ${e.filePath}: ${e.error}`);
+        }
       }
-    }
 
-    // Print layer overview
-    const layers = engine.layers();
-    if (layers.length > 0) {
-      console.log('\nArchitectural layers:');
-      for (const layer of layers.slice(0, 8)) {
-        console.log(`  ${layer.layer.padEnd(20)} ${layer.nodeCount} files`);
+      // Print layer overview
+      const layers = engine.layers();
+      if (layers.length > 0) {
+        console.log('\nArchitectural layers:');
+        for (const layer of layers.slice(0, 8)) {
+          console.log(`  ${layer.layer.padEnd(20)} ${layer.nodeCount} files`);
+        }
       }
-    }
 
-    if (options.watch) {
-      // Keep the DB open: the watcher's parser writes through it.
-      await startWatcher(root, parser, db);
-    } else {
-      db.close();
-    }
-  });
+      if (options.watch) {
+        // Keep the DB open: the watcher's parser writes through it.
+        await startWatcher(root, parser, db);
+      } else {
+        db.close();
+      }
+    },
+  );
 
 // ─── deps ─────────────────────────────────────────────────────────────────────
 
@@ -101,40 +108,45 @@ program
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
   .option('-d, --depth <n>', 'Traversal depth for transitive deps', '3')
   .option('--json', 'Output as JSON')
-  .action(async (target: string, options: { root?: string; dbDir?: string; depth: string; json: boolean }) => {
-    const root = resolveRoot(options);
-    const { db, engine } = await getServices(root, options.dbDir);
+  .action(
+    async (
+      target: string,
+      options: { root?: string; dbDir?: string; depth: string; json: boolean },
+    ) => {
+      const root = resolveRoot(options);
+      const { db, engine } = await getServices(root, options.dbDir);
 
-    const absTarget = path.isAbsolute(target) ? target : path.resolve(root, target);
-    const nodeId = `file:${absTarget}`;
-    const result = engine.deps(nodeId, parseInt(options.depth, 10));
+      const absTarget = path.isAbsolute(target) ? target : path.resolve(root, target);
+      const nodeId = `file:${absTarget}`;
+      const result = engine.deps(nodeId, parseInt(options.depth, 10));
 
-    if (!result) {
-      console.error(`Node not found: ${target}`);
-      console.error('Run `cgb init` first to build the graph.');
-      db.close();
-      process.exit(1);
-    }
-
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      const rel = path.relative(root, result.target.filePath);
-      console.log(`\nDependencies of \`${rel}\`:`);
-      console.log(`\nDirect (${result.direct.length}):`);
-      for (const dep of result.direct) {
-        const label = dep.isExternal ? `[ext] ${dep.name}` : path.relative(root, dep.filePath);
-        console.log(`  → ${label}`);
+      if (!result) {
+        console.error(`Node not found: ${target}`);
+        console.error('Run `cgb init` first to build the graph.');
+        db.close();
+        process.exit(1);
       }
-      if (result.transitive.length > 0) {
-        console.log(`\nTransitive (${result.transitive.length}):`);
-        for (const dep of result.transitive.filter((n) => !n.isExternal).slice(0, 15)) {
-          console.log(`  ⇒ ${path.relative(root, dep.filePath)}`);
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const rel = path.relative(root, result.target.filePath);
+        console.log(`\nDependencies of \`${rel}\`:`);
+        console.log(`\nDirect (${result.direct.length}):`);
+        for (const dep of result.direct) {
+          const label = dep.isExternal ? `[ext] ${dep.name}` : path.relative(root, dep.filePath);
+          console.log(`  → ${label}`);
+        }
+        if (result.transitive.length > 0) {
+          console.log(`\nTransitive (${result.transitive.length}):`);
+          for (const dep of result.transitive.filter((n) => !n.isExternal).slice(0, 15)) {
+            console.log(`  ⇒ ${path.relative(root, dep.filePath)}`);
+          }
         }
       }
-    }
-    db.close();
-  });
+      db.close();
+    },
+  );
 
 // ─── callers ──────────────────────────────────────────────────────────────────
 
@@ -180,34 +192,39 @@ program
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
   .option('-d, --depth <n>', 'Maximum traversal depth', '10')
   .option('--json', 'Output as JSON')
-  .action(async (target: string, options: { root?: string; dbDir?: string; depth: string; json: boolean }) => {
-    const root = resolveRoot(options);
-    const { db, engine } = await getServices(root, options.dbDir);
+  .action(
+    async (
+      target: string,
+      options: { root?: string; dbDir?: string; depth: string; json: boolean },
+    ) => {
+      const root = resolveRoot(options);
+      const { db, engine } = await getServices(root, options.dbDir);
 
-    const absTarget = path.isAbsolute(target) ? target : path.resolve(root, target);
-    const nodeId = `file:${absTarget}`;
-    const result = engine.impact(nodeId, parseInt(options.depth, 10));
+      const absTarget = path.isAbsolute(target) ? target : path.resolve(root, target);
+      const nodeId = `file:${absTarget}`;
+      const result = engine.impact(nodeId, parseInt(options.depth, 10));
 
-    if (!result) {
-      console.error(`Node not found: ${target}`);
-      db.close();
-      process.exit(1);
-    }
-
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      const rel = path.relative(root, result.target.filePath);
-      console.log(`\nImpact analysis for \`${rel}\`:`);
-      console.log(`${result.affected.length} file(s) would be affected:\n`);
-      for (const a of result.affected) {
-        const prefix = '  '.repeat(a.depth);
-        const nodeRel = path.relative(root, a.node.filePath);
-        console.log(`${prefix}↑ depth ${a.depth}: ${nodeRel}`);
+      if (!result) {
+        console.error(`Node not found: ${target}`);
+        db.close();
+        process.exit(1);
       }
-    }
-    db.close();
-  });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const rel = path.relative(root, result.target.filePath);
+        console.log(`\nImpact analysis for \`${rel}\`:`);
+        console.log(`${result.affected.length} file(s) would be affected:\n`);
+        for (const a of result.affected) {
+          const prefix = '  '.repeat(a.depth);
+          const nodeRel = path.relative(root, a.node.filePath);
+          console.log(`${prefix}↑ depth ${a.depth}: ${nodeRel}`);
+        }
+      }
+      db.close();
+    },
+  );
 
 // ─── search ───────────────────────────────────────────────────────────────────
 
@@ -246,33 +263,35 @@ program
   .option('-r, --root <path>', 'Project root directory')
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
   .option('--json', 'Output as JSON')
-  .action(async (from: string, to: string, options: { root?: string; dbDir?: string; json: boolean }) => {
-    const root = resolveRoot(options);
-    const { db, engine } = await getServices(root, options.dbDir);
+  .action(
+    async (from: string, to: string, options: { root?: string; dbDir?: string; json: boolean }) => {
+      const root = resolveRoot(options);
+      const { db, engine } = await getServices(root, options.dbDir);
 
-    const absFrom = path.isAbsolute(from) ? from : path.resolve(root, from);
-    const absTo = path.isAbsolute(to) ? to : path.resolve(root, to);
-    const result = engine.path(`file:${absFrom}`, `file:${absTo}`);
+      const absFrom = path.isAbsolute(from) ? from : path.resolve(root, from);
+      const absTo = path.isAbsolute(to) ? to : path.resolve(root, to);
+      const result = engine.path(`file:${absFrom}`, `file:${absTo}`);
 
-    if (!result) {
-      console.log(`No dependency path found between\n  ${from}\n  ${to}`);
-      db.close();
-      return;
-    }
-
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log('\nDependency path:');
-      for (let i = 0; i < result.path.length; i++) {
-        const node = result.path[i];
-        const relPath = node.isExternal ? node.name : path.relative(root, node.filePath);
-        const edge = result.edges[i];
-        console.log(`  ${i === 0 ? '' : `[${edge?.kind ?? ''}] `}${relPath}`);
+      if (!result) {
+        console.log(`No dependency path found between\n  ${from}\n  ${to}`);
+        db.close();
+        return;
       }
-    }
-    db.close();
-  });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log('\nDependency path:');
+        for (let i = 0; i < result.path.length; i++) {
+          const node = result.path[i];
+          const relPath = node.isExternal ? node.name : path.relative(root, node.filePath);
+          const edge = result.edges[i];
+          console.log(`  ${i === 0 ? '' : `[${edge?.kind ?? ''}] `}${relPath}`);
+        }
+      }
+      db.close();
+    },
+  );
 
 // ─── bundle ───────────────────────────────────────────────────────────────────
 
@@ -288,7 +307,14 @@ program
   .action(
     async (
       target: string,
-      options: { root?: string; dbDir?: string; depth: string; source: boolean; output?: string; json: boolean },
+      options: {
+        root?: string;
+        dbDir?: string;
+        depth: string;
+        source: boolean;
+        output?: string;
+        json: boolean;
+      },
     ) => {
       const root = resolveRoot(options);
       const { db, bundle } = await getServices(root, options.dbDir);
@@ -449,45 +475,53 @@ program
   .option('-b, --base <ref>', 'Base git ref to diff against (default: HEAD~1)', 'HEAD~1')
   .option('-f, --format <type>', 'Output format: markdown or json', 'markdown')
   .option('-o, --output <file>', 'Write output to a file instead of stdout')
-  .action(async (options: { root?: string; dbDir?: string; base: string; format: string; output?: string }) => {
-    const root = resolveRoot(options);
+  .action(
+    async (options: {
+      root?: string;
+      dbDir?: string;
+      base: string;
+      format: string;
+      output?: string;
+    }) => {
+      const root = resolveRoot(options);
 
-    const { isGitRepo } = await import('../git/diff.js');
-    if (!isGitRepo(root)) {
-      console.error(`Error: Not a git repository: ${root}`);
-      process.exit(1);
-    }
-
-    const { db, engine } = await getServices(root, options.dbDir);
-    const { buildReviewContext, formatReviewContext } = await import('../git/review-context.js');
-
-    let ctx;
-    try {
-      ctx = await buildReviewContext(root, db, engine, options.base);
-    } finally {
-      db.close();
-    }
-
-    let output: string;
-    if (options.format === 'json') {
-      // Deterministic: arrays sorted, no timestamps, paths relative to the root.
-      const { relativizePaths } = await import('../portable.js');
-      output = JSON.stringify(relativizePaths(ctx, root), null, 2);
-    } else {
-      output = formatReviewContext(ctx);
-    }
-
-    if (options.output) {
-      fs.writeFileSync(options.output, output, 'utf-8');
-      console.log(`Review context written to: ${options.output}`);
-      process.stderr.write(`~${ctx.tokenEstimate} tokens\n`);
-    } else {
-      console.log(output);
-      if (options.format !== 'json') {
-        process.stderr.write(`\n# ~${ctx.tokenEstimate} tokens\n`);
+      const { isGitRepo } = await import('../git/diff.js');
+      if (!isGitRepo(root)) {
+        console.error(`Error: Not a git repository: ${root}`);
+        process.exit(1);
       }
-    }
-  });
+
+      const { db, engine } = await getServices(root, options.dbDir);
+      const { buildReviewContext, formatReviewContext } = await import('../git/review-context.js');
+
+      let ctx;
+      try {
+        ctx = await buildReviewContext(root, db, engine, options.base);
+      } finally {
+        db.close();
+      }
+
+      let output: string;
+      if (options.format === 'json') {
+        // Deterministic: arrays sorted, no timestamps, paths relative to the root.
+        const { relativizePaths } = await import('../portable.js');
+        output = JSON.stringify(relativizePaths(ctx, root), null, 2);
+      } else {
+        output = formatReviewContext(ctx);
+      }
+
+      if (options.output) {
+        fs.writeFileSync(options.output, output, 'utf-8');
+        console.log(`Review context written to: ${options.output}`);
+        process.stderr.write(`~${ctx.tokenEstimate} tokens\n`);
+      } else {
+        console.log(output);
+        if (options.format !== 'json') {
+          process.stderr.write(`\n# ~${ctx.tokenEstimate} tokens\n`);
+        }
+      }
+    },
+  );
 
 // ─── communities ──────────────────────────────────────────────────────────────
 
@@ -499,47 +533,61 @@ program
   .option('--top <n>', 'Only show the N largest communities')
   .option('--overview', 'Show the architecture overview (layers, cycles, coupling, health) instead')
   .option('--json', 'Output as JSON')
-  .action(async (options: { root?: string; dbDir?: string; top?: string; overview?: boolean; json?: boolean }) => {
-    const root = resolveRoot(options);
-    const { db, engine } = await getServices(root, options.dbDir);
-    try {
-      const { CommunityDetector } = await import('../communities/index.js');
-      const { relativizePaths } = await import('../portable.js');
-      const detector = new CommunityDetector(db, engine);
-      const top = options.top !== undefined ? parseInt(options.top, 10) : undefined;
-      const limit = top !== undefined && top > 0 ? top : undefined;
+  .action(
+    async (options: {
+      root?: string;
+      dbDir?: string;
+      top?: string;
+      overview?: boolean;
+      json?: boolean;
+    }) => {
+      const root = resolveRoot(options);
+      const { db, engine } = await getServices(root, options.dbDir);
+      try {
+        const { CommunityDetector } = await import('../communities/index.js');
+        const { relativizePaths } = await import('../portable.js');
+        const detector = new CommunityDetector(db, engine);
+        const top = options.top !== undefined ? parseInt(options.top, 10) : undefined;
+        const limit = top !== undefined && top > 0 ? top : undefined;
 
-      if (options.overview) {
-        const overview = detector.overview();
-        if (limit) overview.communities = overview.communities.slice(0, limit);
+        if (options.overview) {
+          const overview = detector.overview();
+          if (limit) overview.communities = overview.communities.slice(0, limit);
+          if (options.json) {
+            console.log(JSON.stringify(relativizePaths(overview, root), null, 2));
+          } else {
+            console.log(`\nArchitecture overview (health ${overview.healthScore}/100)`);
+            console.log(
+              `  Files: ${overview.totalFiles}  Nodes: ${overview.totalNodes}  Communities: ${overview.communities.length}`,
+            );
+            console.log(`  Cycles: ${overview.cycles.length}  Orphans: ${overview.orphans.length}`);
+            for (const note of overview.healthNotes) console.log(`  - ${note}`);
+            for (const c of overview.communities) {
+              console.log(
+                `\n  ${c.label} [${c.role}] ${c.nodeCount} nodes, ${c.files.length} files`,
+              );
+            }
+          }
+          return;
+        }
+
+        let communities = detector.detect();
+        if (limit) communities = communities.slice(0, limit);
         if (options.json) {
-          console.log(JSON.stringify(relativizePaths(overview, root), null, 2));
+          console.log(JSON.stringify(relativizePaths(communities, root), null, 2));
         } else {
-          console.log(`\nArchitecture overview (health ${overview.healthScore}/100)`);
-          console.log(`  Files: ${overview.totalFiles}  Nodes: ${overview.totalNodes}  Communities: ${overview.communities.length}`);
-          console.log(`  Cycles: ${overview.cycles.length}  Orphans: ${overview.orphans.length}`);
-          for (const note of overview.healthNotes) console.log(`  - ${note}`);
-          for (const c of overview.communities) {
-            console.log(`\n  ${c.label} [${c.role}] ${c.nodeCount} nodes, ${c.files.length} files`);
+          console.log(`\nCommunities (${communities.length}):\n`);
+          for (const c of communities) {
+            console.log(
+              `  ${c.label} [${c.role}] — ${c.nodeCount} nodes, ${c.files.length} files, cohesion ${(c.cohesion ?? 0).toFixed(2)}`,
+            );
           }
         }
-        return;
+      } finally {
+        db.close();
       }
-
-      let communities = detector.detect();
-      if (limit) communities = communities.slice(0, limit);
-      if (options.json) {
-        console.log(JSON.stringify(relativizePaths(communities, root), null, 2));
-      } else {
-        console.log(`\nCommunities (${communities.length}):\n`);
-        for (const c of communities) {
-          console.log(`  ${c.label} [${c.role}] — ${c.nodeCount} nodes, ${c.files.length} files, cohesion ${(c.cohesion ?? 0).toFixed(2)}`);
-        }
-      }
-    } finally {
-      db.close();
-    }
-  });
+    },
+  );
 
 // ─── flows ────────────────────────────────────────────────────────────────────
 
@@ -553,7 +601,14 @@ program
   .option('--depth <n>', 'Max depth for --chain', '5')
   .option('--json', 'Output as JSON')
   .action(
-    async (options: { root?: string; dbDir?: string; top: string; chain?: string; depth: string; json?: boolean }) => {
+    async (options: {
+      root?: string;
+      dbDir?: string;
+      top: string;
+      chain?: string;
+      depth: string;
+      json?: boolean;
+    }) => {
       const root = resolveRoot(options);
       const { db } = await getServices(root, options.dbDir);
       try {
@@ -579,7 +634,9 @@ program
           }
           const chain = flows.callChain(nodeId, parseInt(options.depth, 10) || 5);
           if (options.json) console.log(JSON.stringify(relativizePaths(chain, root), null, 2));
-          else for (const s of chain) console.log(`${'  '.repeat(s.depth)}${s.name} (${path.relative(root, s.filePath)})`);
+          else
+            for (const s of chain)
+              console.log(`${'  '.repeat(s.depth)}${s.name} (${path.relative(root, s.filePath)})`);
           return;
         }
 
@@ -592,9 +649,13 @@ program
           console.log(JSON.stringify(relativizePaths(result, root), null, 2));
         } else {
           console.log(`\nEntry points (${result.entryPoints.length}):`);
-          for (const e of result.entryPoints) console.log(`  ${e.name}  fan-out ${e.fanOut}  ${path.relative(root, e.filePath)}`);
+          for (const e of result.entryPoints)
+            console.log(`  ${e.name}  fan-out ${e.fanOut}  ${path.relative(root, e.filePath)}`);
           console.log(`\nCritical nodes (${result.criticalNodes.length}):`);
-          for (const c of result.criticalNodes) console.log(`  [${c.label}] ${c.name}  score ${c.score}  ${path.relative(root, c.filePath)}`);
+          for (const c of result.criticalNodes)
+            console.log(
+              `  [${c.label}] ${c.name}  score ${c.score}  ${path.relative(root, c.filePath)}`,
+            );
         }
       } finally {
         db.close();
@@ -664,7 +725,6 @@ program
   )
   .option('--mcp-path <path>', 'Explicit path to write the MCP config JSON')
   .option('--skill', 'Also generate a Cursor skill snippet at .cursor/skills/cgb/SKILL.md', false)
-<<<<<<< working
   .option(
     '--hook',
     'claude-code: add a PostToolUse hook to .claude/settings.json (others: cgb:watch script)',
@@ -708,12 +768,6 @@ program
     }
     const n = await runUpdate({ root: resolveRoot(options), files });
     console.log(`Updated ${n} file(s)`);
-=======
-  .option('--hook', 'Append a post-save hook script (cgb init --watch) to package.json scripts', false)
-  .action(async (options: { root?: string; dbDir?: string; platform?: string; mcpPath?: string; skill: boolean; hook: boolean }) => {
-    const { runInstall } = await import('./install.js');
-    await runInstall({ ...options, root: resolveRoot(options) });
->>>>>>> headless
   });
 
 // ─── wiki ─────────────────────────────────────────────────────────────────────
@@ -724,7 +778,10 @@ program
   .option('-r, --root <path>', 'Project root directory (default: cwd)')
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
   .option('-o, --output <dir>', 'Output directory for wiki pages (default: <root>/wiki)')
-  .option('--json', 'Print [{communityId, title, files, markdown}] to stdout instead of writing files')
+  .option(
+    '--json',
+    'Print [{communityId, title, files, markdown}] to stdout instead of writing files',
+  )
   .action(async (options: { root?: string; dbDir?: string; output?: string; json?: boolean }) => {
     const root = resolveRoot(options);
     const outputDir = options.output ?? path.join(root, 'wiki');
@@ -891,10 +948,10 @@ program
   .option('--title <title>', 'Title shown in the HTML header')
   .option('--serve', 'After generating, start an HTTP server and open the file', false)
   .option('--port <number>', 'Port for --serve mode (default: 3737)', '3737')
-<<<<<<< working
   .action(
     async (options: {
       root?: string;
+      dbDir?: string;
       output?: string;
       title?: string;
       serve: boolean;
@@ -908,7 +965,7 @@ program
       const { GraphEngine } = await import('../graph/engine.js');
       const { generateVisualization, serveVisualization } = await import('../viz/index.js');
 
-      const db = new GraphDb(root);
+      const db = new GraphDb(root, { dbDir: options.dbDir });
       await db.init();
       const engine = new GraphEngine(db);
       const title = options.title ?? path.basename(root);
@@ -926,34 +983,6 @@ program
       }
     },
   );
-=======
-  .action(async (options: { root?: string; dbDir?: string; output?: string; title?: string; serve: boolean; port: string }) => {
-    const root = resolveRoot(options);
-    const output = options.output ?? path.join(root, 'graph.html');
-    const port = parseInt(options.port, 10);
-
-    const { GraphDb } = await import('../graph/db.js');
-    const { GraphEngine } = await import('../graph/engine.js');
-    const { generateVisualization, serveVisualization } = await import('../viz/index.js');
-
-    const db = new GraphDb(root, { dbDir: options.dbDir });
-    await db.init();
-    const engine = new GraphEngine(db);
-    const title = options.title ?? path.basename(root);
-
-    generateVisualization(db, { output, title, engine });
-    console.log(`✅ Graph written to: ${output}`);
-
-    if (options.serve) {
-      const server = serveVisualization(db, { port, title, engine });
-      server.on('listening', () => {
-        console.log(`🌐 Serving at http://localhost:${port}`);
-        console.log('   Press Ctrl+C to stop.');
-      });
-      await new Promise<void>((_, reject) => server.on('error', reject));
-    }
-  });
->>>>>>> headless
 
 // ─── eval ─────────────────────────────────────────────────────────────────────
 
@@ -1037,14 +1066,14 @@ program
   .command('mcp')
   .description('Start the MCP server so Cursor / Claude Code can call cgb tools directly')
   .option('-r, --root <path>', 'Default project root (tools can override per-call)')
-<<<<<<< working
-  .action(async (options: { root?: string }) => {
-    if (options.root) process.env['CGB_ROOT'] = path.resolve(options.root);
-=======
   .option('--db-dir <path>', 'Directory for graph.db (default: env CGB_DB_DIR or <root>/.cgb)')
-  .option('--read-only', 'Serve only non-mutating tools; never write the DB or the filesystem', false)
+  .option(
+    '--read-only',
+    'Serve only non-mutating tools; never write the DB or the filesystem',
+    false,
+  )
   .action(async (options: { root?: string; dbDir?: string; readOnly?: boolean }) => {
->>>>>>> headless
+    if (options.root) process.env['CGB_ROOT'] = path.resolve(options.root);
     const { startMcpServer } = await import('../mcp/server.js');
     await startMcpServer({ readOnly: options.readOnly, dbDir: options.dbDir, root: options.root });
   });

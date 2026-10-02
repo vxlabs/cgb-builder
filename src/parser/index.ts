@@ -88,8 +88,9 @@ export class Parser {
   async scanAll(force = false): Promise<ParseResult> {
     const start = Date.now();
     const files = await this.discoverFiles();
-<<<<<<< working
 
+    // Prune files that vanished since the last scan (a cached DB may be reused across
+    // worktrees / commits), so stale nodes never leak into analysis.
     const key = (p: string): string =>
       process.platform === 'win32' ? path.normalize(p).toLowerCase() : path.normalize(p);
     const discovered = new Set(files.map(key));
@@ -99,13 +100,6 @@ export class Parser {
         for (const f of gone) this.db.deleteFile(f.filePath);
       });
       debug('parser', `removed ${gone.length} file(s) no longer on disk`);
-=======
-    // Prune files that vanished since the last scan (a cached DB may be reused across
-    // worktrees / commits), so stale nodes never leak into analysis.
-    const present = new Set(files);
-    for (const rec of this.db.getAllFiles()) {
-      if (!present.has(rec.filePath)) this.db.deleteFile(rec.filePath);
->>>>>>> headless
     }
     return this.parseFiles(files, force, start);
   }

@@ -9,6 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { relativizePaths } from '../portable.js';
 import type { GraphDb } from '../graph/db.js';
 import type { CommunityDetector, Community, ArchitectureOverview } from '../communities/index.js';
 
@@ -71,8 +72,7 @@ export class WikiGenerator {
   generateJson(root: string): WikiPageJson[] {
     const overview = this.detector.overview();
     const result = this.generate();
-    const prefix = path.resolve(root) + path.sep;
-    const strip = (s: string) => s.split(prefix).join('');
+    const strip = (s: string) => relativizePaths(s, root);
     const filesById = new Map(overview.communities.map((c) => [c.id, c.files]));
     const pages: WikiPageJson[] = result.pages.map((p) => ({
       communityId: p.communityId,
