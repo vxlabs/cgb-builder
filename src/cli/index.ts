@@ -41,7 +41,7 @@ const program = new Command();
 program
   .name('cgb')
   .description('Code Graph Builder — build and query a dependency graph for AI context bundles')
-  .version('1.1.0');
+  .version('1.2.0');
 
 // ─── init ─────────────────────────────────────────────────────────────────────
 

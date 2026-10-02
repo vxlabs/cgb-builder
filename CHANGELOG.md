@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [1.2.0] - 2026-10-02
+
+### Added
+
+#### Visualization (`src/viz/index.ts`)
+- **Three-tab UI** — Graph, Stats, and Tree views selectable from the header tab bar
+- **File Explorer** — collapsible left sidebar showing the project file tree; click a file to highlight its nodes on the graph
+- **Detail Panel** — right sidebar opens on node click, showing kind badge, file path, description, fan-in/fan-out metrics, community membership, and grouped in/out edge lists with clickable links
+- **Stats view** — summary cards (nodes, edges, files), bar charts for nodes-by-kind and edges-by-kind, language breakdown, top-10 most-connected nodes table, and health badges (cycle count, orphan count)
+- **Tree view** — D3 collapsible tree layout rendering the file hierarchy; searchable with a filter input
+- **Edge-kind filter checkboxes** — toggle individual edge kinds (imports, calls, contains, etc.) in the Graph toolbar
+- **Extended `VizNode`** — now carries `description`, `language`, `isExternal`, `fanIn`, `fanOut`, `communityId`, and `meta`
+- **Extended `VizEdge`** — now carries `reason`
+- **New types** — `FileTreeNode`, `VizStats`, `VizCommunity`, `VizData`; `VizGraph` kept as a deprecated alias for `VizData`
+- `buildVizGraph` accepts an optional `GraphEngine` to populate `cycleCount` and `orphanCount` in stats
+
+#### C# Adapter
+- Methods and constructors are now extracted per class (qualified as `Class.Method`) with `contains` edges from their class
+- Method invocations inside method bodies produce `calls` edges
+- File-scoped namespace declarations (`namespace Foo;`) are now recognised
+
+#### Graph & Database
+- `getEdgeCountByKind()` helper in `src/graph/db.ts`
+
+### Changed
+- C# file → class edges now use kind `contains` instead of `exports`
+- `cgb viz` now passes `GraphEngine` to `generateVisualization` / `serveVisualization` for richer stats
+- `cgb --version` now reports the correct package version
+
+---
+
 ## [1.1.0] - 2026-04-05
 
 ### Added
@@ -75,26 +106,13 @@ New tools added to the MCP server:
 - New `GitChange`, `RiskScore`, `ReviewContext`, `RefactorPreview`, `RegistryEntry` types
 - New `EmbedProvider`, `SearchResult`, `WikiSection` types
 
-#### Visualization (`src/viz/index.ts`)
-- **Three-tab UI** — Graph, Stats, and Tree views selectable from the header tab bar
-- **File Explorer** — collapsible left sidebar showing the project file tree; click a file to highlight its nodes on the graph
-- **Detail Panel** — right sidebar opens on node click, showing kind badge, file path, description, fan-in/fan-out metrics, community membership, and grouped in/out edge lists with clickable links
-- **Stats view** — summary cards (nodes, edges, files), bar charts for nodes-by-kind and edges-by-kind, language breakdown, top-10 most-connected nodes table, and health badges (cycle count, orphan count)
-- **Tree view** — D3 collapsible tree layout rendering the file hierarchy; searchable with a filter input
-- **Edge-kind filter checkboxes** — toggle individual edge kinds (imports, calls, contains, etc.) in the Graph toolbar
-- **Extended `VizNode`** — now carries `description`, `language`, `isExternal`, `fanIn`, `fanOut`, `communityId`, and `meta`
-- **Extended `VizEdge`** — now carries `reason`
-- **New types** — `FileTreeNode`, `VizStats`, `VizCommunity`, `VizData`; `VizGraph` kept as a deprecated alias for `VizData`
-- `buildVizGraph` accepts an optional `GraphEngine` to populate `cycleCount` and `orphanCount` in stats
-
 ### Changed
 - MCP server rebuilt with full tool suite (26 tools) and prompt support
 - CLI rebuilt with `commander` sub-command groups (`registry`, `refactor`)
 - `src/parser/index.ts` — incremental parse dispatch with content-hash caching
 - `src/parser/tree-sitter-engine.ts` — lazy WASM loading improvements
 - `src/parser/utils.ts` — extended language detection for all 12 supported languages
-- `src/graph/db.ts` — schema migrations, new indices, extended query API; added `getEdgeCountByKind()` helper
-- `src/cli/index.ts` — `cgb viz` now passes `GraphEngine` to `generateVisualization` / `serveVisualization` for richer stats
+- `src/graph/db.ts` — schema migrations, new indices, extended query API
 
 ---
 
