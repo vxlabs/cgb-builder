@@ -126,7 +126,7 @@ export function analyzeChanges(
   }
 
   // Sort by risk descending so callers can take the top N easily
-  details.sort((a, b) => b.riskScore - a.riskScore);
+  details.sort((a, b) => b.riskScore - a.riskScore || a.file.filePath.localeCompare(b.file.filePath));
 
   return {
     summary,

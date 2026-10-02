@@ -78,6 +78,12 @@ export class Parser {
   async scanAll(force = false): Promise<ParseResult> {
     const start = Date.now();
     const files = await this.discoverFiles();
+    // Prune files that vanished since the last scan (a cached DB may be reused across
+    // worktrees / commits), so stale nodes never leak into analysis.
+    const present = new Set(files);
+    for (const rec of this.db.getAllFiles()) {
+      if (!present.has(rec.filePath)) this.db.deleteFile(rec.filePath);
+    }
     return this.parseFiles(files, force, start);
   }
 

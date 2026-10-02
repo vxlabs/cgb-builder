@@ -52,12 +52,12 @@ export async function buildReviewContext(
   const analysis = analyzeChanges(gitChanges, db, engine);
 
   // ── 3. Build changed-file list ────────────────────────────────────────────
-  const changedFiles = gitChanges.map((c) => c.filePath);
+  const changedFiles = gitChanges.map((c) => c.filePath).sort();
   const changedSet = new Set(changedFiles);
 
   // ── 4. Blast radius: files affected but not directly changed ──────────────
   const blastFiles = collectBlastFiles(analysis, db);
-  const affectedFiles = blastFiles.filter((f) => !changedSet.has(f));
+  const affectedFiles = blastFiles.filter((f) => !changedSet.has(f)).sort();
 
   // ── 5. Relevant test files ────────────────────────────────────────────────
   const testSet = new Set<string>();

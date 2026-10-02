@@ -46,13 +46,50 @@ import {
 
 // ─── Service bootstrap ────────────────────────────────────────────────────────
 
+export interface McpServerOptions {
+  /** Register only non-mutating tools and never write the DB or the filesystem. */
+  readOnly?: boolean;
+  /** Directory holding graph.db (overrides env CGB_DB_DIR and `<root>/.cgb`). */
+  dbDir?: string;
+  /** Default project root used when a tool call omits `root`. */
+  root?: string;
+}
+
+/** Tools that never modify the DB or the filesystem; the only ones served with `--read-only`. */
+export const READ_ONLY_TOOLS: readonly string[] = [
+  'cgb_deps',
+  'cgb_impact',
+  'cgb_search',
+  'cgb_bundle',
+  'cgb_stats',
+  'cgb_path',
+  'cgb_detect_changes',
+  'cgb_review_context',
+  'cgb_large_functions',
+  'cgb_entry_points',
+  'cgb_call_chain',
+  'cgb_criticality',
+  'cgb_communities',
+  'cgb_architecture',
+  'cgb_dead_code',
+  'cgb_rename_preview',
+  'cgb_refactor_suggest',
+  'cgb_wiki_section',
+  'cgb_registry_list',
+  'cgb_registry_search',
+  'cgb_embed_search',
+  'cgb_embed_similar',
+];
+
+let mcpOptions: McpServerOptions = {};
+
 async function getServices(root: string) {
   const { GraphDb } = await import('../graph/db.js');
   const { GraphEngine } = await import('../graph/engine.js');
   const { Parser } = await import('../parser/index.js');
   const { BundleGenerator } = await import('../bundle/generator.js');
 
-  const db = new GraphDb(root);
+  const db = new GraphDb(root, { dbDir: mcpOptions.dbDir, readOnly: mcpOptions.readOnly });
   await db.init();
   const engine = new GraphEngine(db);
   const parser = new Parser(db, root);
@@ -802,6 +839,9 @@ async function handleCommunities(args: { root: string }) {
   try {
     const { CommunityDetector } = await import('../communities/index.js');
     const detector = new CommunityDetector(db, engine);
+    if (mcpOptions.readOnly) {
+      return ok(detector.detect());
+    }
     const communities = detector.detectAndPersist();
     db.persist();
     return ok(communities);
@@ -947,7 +987,7 @@ async function handleRegistryRegister(args: { root: string; name?: string }) {
 
 async function handleRegistryList() {
   const { RegistryManager } = await import('../registry/index.js');
-  const registry = new RegistryManager();
+  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
   const entries = registry.load();
   return ok({ count: entries.length, repos: entries });
 }
@@ -955,8 +995,8 @@ async function handleRegistryList() {
 async function handleRegistrySearch(args: { query: string; maxPerRepo?: number }) {
   const { query, maxPerRepo = 10 } = args;
   const { RegistryManager } = await import('../registry/index.js');
-  const registry = new RegistryManager();
-  const results = await registry.search(query, maxPerRepo);
+  const registry = new RegistryManager(undefined, mcpOptions.readOnly);
+  const results = await registry.search(query, maxPerRepo, mcpOptions.readOnly);
   return ok({ query, count: results.length, results });
 }
 
@@ -986,7 +1026,7 @@ async function handleEmbedSearch(args: {
   const { db } = await getServices(root);
   try {
     const { hybridSearch } = await import('../embed/index.js');
-    const results = await hybridSearch(db, query, { limit, contextFiles });
+    const results = await hybridSearch(db, query, { limit, contextFiles, localOnly: mcpOptions.readOnly });
     return ok({ query, count: results.length, results });
   } finally {
     db.close();
@@ -996,10 +1036,14 @@ async function handleEmbedSearch(args: {
 async function handleEmbedSimilar(args: { root: string; nodeId: string; limit?: number }) {
   const { root, nodeId, limit = 10 } = args;
   const { db } = await getServices(root);
-  const { EmbedSearcher } = await import('../embed/index.js');
-  const searcher = new EmbedSearcher(db);
-  const results = searcher.findSimilar(nodeId, limit);
-  return ok({ nodeId, count: results.length, results });
+  try {
+    const { EmbedSearcher } = await import('../embed/index.js');
+    const searcher = new EmbedSearcher(db);
+    const results = searcher.findSimilar(nodeId, limit);
+    return ok({ nodeId, count: results.length, results });
+  } finally {
+    db.close();
+  }
 }
 
 // ─── Prompt definitions ───────────────────────────────────────────────────────
@@ -1130,59 +1174,20 @@ function buildPreMergeCheckPrompt(root: string, base: string): string {
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
-export async function startMcpServer(): Promise<void> {
-  const server = new Server({ name: 'cgb', version: '1.0.0' }, { capabilities: { tools: {}, prompts: {} } });
-
-  // List available tools
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-  // List available prompts
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
-
-  // Resolve a prompt by name
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    const { name, arguments: pArgs = {} } = request.params;
-    const root: string = (pArgs['root'] as string) ?? '';
-    const base: string = (pArgs['base'] as string) ?? 'main';
-
-    switch (name) {
-      case 'review_changes':
-        return {
-          description: 'Code-review prompt with cgb context',
-          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
-        };
-      case 'architecture_map':
-        return {
-          description: 'Architecture mapping prompt',
-          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
-        };
-      case 'debug_issue': {
-        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
-        const entry: string | undefined = pArgs['entry'] as string | undefined;
-        return {
-          description: 'Debugging prompt with call-chain tracing',
-          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
-        };
-      }
-      case 'onboard_developer':
-        return {
-          description: 'Developer onboarding guide',
-          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
-        };
-      case 'pre_merge_check':
-        return {
-          description: 'Pre-merge quality checklist',
-          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
-        };
-      default:
-        throw new Error(`Unknown prompt: ${name}`);
+/** Dispatch a tool call under the given options. Exported for tests and embedding. */
+export async function callTool(
+  name: string,
+  rawArgs: Record<string, unknown>,
+  options: McpServerOptions = mcpOptions,
+) {
+  const previous = mcpOptions;
+  mcpOptions = options;
+  try {
+    if (options.readOnly && !READ_ONLY_TOOLS.includes(name)) {
+      return err(`Tool ${name} is not available in read-only mode.`);
     }
-  });
-
-  // Handle tool calls
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args = {} } = request.params;
-
+    const args: Record<string, unknown> = { ...rawArgs };
+    if (args['root'] === undefined && options.root) args['root'] = options.root;
     try {
       switch (name) {
         case 'cgb_init':
@@ -1252,6 +1257,87 @@ export async function startMcpServer(): Promise<void> {
       const message = e instanceof Error ? e.message : String(e);
       return err(`Tool ${name} failed: ${message}`);
     }
+  } finally {
+    mcpOptions = previous;
+  }
+}
+
+/** Tool definitions served under the given options (read-only mode filters out mutating tools). */
+export function listTools(options: McpServerOptions = {}) {
+  if (!options.readOnly) return TOOLS;
+  const allowed = new Set(READ_ONLY_TOOLS);
+  return TOOLS.filter((t) => allowed.has(t.name)).map((t) => ({
+    ...t,
+    inputSchema: {
+      ...t.inputSchema,
+      // `root` can come from --root in read-only mode
+      required: options.root
+        ? (t.inputSchema as { required?: string[] }).required?.filter((r) => r !== 'root')
+        : (t.inputSchema as { required?: string[] }).required,
+    },
+  }));
+}
+
+export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
+  mcpOptions = {
+    ...options,
+    root: options.root ? path.resolve(options.root) : undefined,
+    dbDir: options.dbDir ? path.resolve(options.dbDir) : undefined,
+  };
+  const server = new Server({ name: 'cgb', version: '1.2.0' }, { capabilities: { tools: {}, prompts: {} } });
+
+  // List available tools
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(mcpOptions) }));
+
+  // List available prompts (prompts reference mutating tools, so none are served read-only)
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+    prompts: mcpOptions.readOnly ? [] : PROMPTS,
+  }));
+
+  // Resolve a prompt by name
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: pArgs = {} } = request.params;
+    const root: string = (pArgs['root'] as string) ?? '';
+    const base: string = (pArgs['base'] as string) ?? 'main';
+
+    switch (name) {
+      case 'review_changes':
+        return {
+          description: 'Code-review prompt with cgb context',
+          messages: [{ role: 'user', content: { type: 'text', text: buildReviewChangesPrompt(root, base) } }],
+        };
+      case 'architecture_map':
+        return {
+          description: 'Architecture mapping prompt',
+          messages: [{ role: 'user', content: { type: 'text', text: buildArchitectureMapPrompt(root) } }],
+        };
+      case 'debug_issue': {
+        const symptom: string = (pArgs['symptom'] as string) ?? 'unknown error';
+        const entry: string | undefined = pArgs['entry'] as string | undefined;
+        return {
+          description: 'Debugging prompt with call-chain tracing',
+          messages: [{ role: 'user', content: { type: 'text', text: buildDebugIssuePrompt(root, symptom, entry) } }],
+        };
+      }
+      case 'onboard_developer':
+        return {
+          description: 'Developer onboarding guide',
+          messages: [{ role: 'user', content: { type: 'text', text: buildOnboardDeveloperPrompt(root) } }],
+        };
+      case 'pre_merge_check':
+        return {
+          description: 'Pre-merge quality checklist',
+          messages: [{ role: 'user', content: { type: 'text', text: buildPreMergeCheckPrompt(root, base) } }],
+        };
+      default:
+        throw new Error(`Unknown prompt: ${name}`);
+    }
+  });
+
+  // Handle tool calls
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args = {} } = request.params;
+    return callTool(name, args as Record<string, unknown>, mcpOptions);
   });
 
   // Connect via stdio

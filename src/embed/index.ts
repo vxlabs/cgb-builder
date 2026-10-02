@@ -125,6 +125,8 @@ function rrfMerge(lists: Array<Array<{ id: string }>>, k = 60): Array<{ id: stri
 export interface HybridSearchOptions {
   limit?: number;
   contextFiles?: string[]; // nodes in these files get a 1.5x boost
+  /** Never call a remote embedding provider (used by read-only MCP mode). */
+  localOnly?: boolean;
 }
 
 /**
@@ -137,7 +139,7 @@ export async function hybridSearch(
   query: string,
   options: HybridSearchOptions = {},
 ): Promise<EmbedResult[]> {
-  const { limit = 20, contextFiles } = options;
+  const { limit = 20, contextFiles, localOnly = false } = options;
   const contextSet = new Set(contextFiles ?? []);
 
   // 1. FTS5 BM25
@@ -156,8 +158,10 @@ export async function hybridSearch(
         const { provider: providerName } = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as {
           provider: string;
         };
-        const provider = getProvider(providerName);
-        queryVec = await provider.embedQuery(query);
+        if (!localOnly || providerName === 'local') {
+          const provider = getProvider(providerName);
+          queryVec = await provider.embedQuery(query);
+        }
       }
     } catch {
       // Provider unavailable or API error — fall through to centroid approximation
