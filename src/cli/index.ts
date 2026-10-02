@@ -41,7 +41,7 @@ const program = new Command();
 program
   .name('cgb')
   .description('Code Graph Builder — build and query a dependency graph for AI context bundles')
-  .version('1.0.0');
+  .version('1.1.0');
 
 // ─── init ─────────────────────────────────────────────────────────────────────
 
@@ -680,16 +680,19 @@ program
     const port = parseInt(options.port, 10);
 
     const { GraphDb } = await import('../graph/db.js');
+    const { GraphEngine } = await import('../graph/engine.js');
     const { generateVisualization, serveVisualization } = await import('../viz/index.js');
 
     const db = new GraphDb(root);
     await db.init();
+    const engine = new GraphEngine(db);
+    const title = options.title ?? path.basename(root);
 
-    generateVisualization(db, { output, title: options.title ?? path.basename(root) });
+    generateVisualization(db, { output, title, engine });
     console.log(`✅ Graph written to: ${output}`);
 
     if (options.serve) {
-      const server = serveVisualization(db, { port, title: options.title ?? path.basename(root) });
+      const server = serveVisualization(db, { port, title, engine });
       server.on('listening', () => {
         console.log(`🌐 Serving at http://localhost:${port}`);
         console.log('   Press Ctrl+C to stop.');

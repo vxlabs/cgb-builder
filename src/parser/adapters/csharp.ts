@@ -5,7 +5,8 @@
  *  - using directives          → imports edges
  *  - class / record definitions → class nodes + inherits / implements edges
  *  - interface definitions      → interface nodes
- *  - method declarations        → method nodes
+ *  - method declarations        → method nodes + contains edges
+ *  - method invocations         → calls edges
  *  - namespace declarations     → module nodes
  */
 
@@ -47,14 +48,14 @@ export class CSharpAdapter implements LanguageAdapter {
     // ── Namespaces ───────────────────────────────────────────────────────────
     this.extractNamespaces(tree, langObj, filePath, fileNodeId, nodes, edges);
 
-    // ── Classes & Records ────────────────────────────────────────────────────
+    // ── Classes & Records (with methods + calls inside) ─────────────────────
     this.extractClasses(tree, langObj, filePath, fileNodeId, nodes, edges, source);
 
     // ── Interfaces ───────────────────────────────────────────────────────────
     this.extractInterfaces(tree, langObj, filePath, fileNodeId, nodes, edges);
 
-    // ── Methods ──────────────────────────────────────────────────────────────
-    this.extractMethods(tree, langObj, filePath, fileNodeId, nodes, edges);
+    // ── Top-level methods (not inside a class) ──────────────────────────────
+    this.extractTopLevelMethods(tree, filePath, fileNodeId, nodes, edges);
 
     return { filePath, language: 'csharp', nodes, edges };
   }
@@ -70,7 +71,6 @@ export class CSharpAdapter implements LanguageAdapter {
     edges: Omit<GraphEdge, 'updatedAt'>[],
   ): void {
     try {
-      // Use a simpler approach for usings — walk the tree manually
       const usingNodes = this.findNodesByType(tree.rootNode, 'using_directive');
       const seen = new Set<string>();
 
@@ -82,7 +82,6 @@ export class CSharpAdapter implements LanguageAdapter {
         if (!nameText || seen.has(nameText)) continue;
         seen.add(nameText);
 
-        // Top-level namespace (first segment)
         const topNs = nameText.split('.')[0];
         const extId = makeNodeId('external_dep', topNs);
 
@@ -122,7 +121,11 @@ export class CSharpAdapter implements LanguageAdapter {
   ): void {
     try {
       const nsNodes = this.findNodesByType(tree.rootNode, 'namespace_declaration');
-      for (const nsNode of nsNodes) {
+      // Also handle file-scoped namespaces
+      const fileScopedNs = this.findNodesByType(tree.rootNode, 'file_scoped_namespace_declaration');
+      const allNs = [...nsNodes, ...fileScopedNs];
+
+      for (const nsNode of allNs) {
         const nameNode = nsNode.childForFieldName('name');
         if (!nameNode) continue;
         const nsName = nameNode.text;
@@ -185,22 +188,21 @@ export class CSharpAdapter implements LanguageAdapter {
           meta: JSON.stringify({ isRecord: classNode.type === 'record_declaration' }),
         });
 
+        // file contains class
         edges.push({
-          id: makeEdgeId(fileNodeId, 'exports', classId),
+          id: makeEdgeId(fileNodeId, 'contains', classId),
           fromId: fileNodeId,
           toId: classId,
-          kind: 'exports',
-          reason: `defines class ${className}`,
+          kind: 'contains',
+          reason: `file defines class ${className}`,
         });
 
         // Base list (extends / implements)
         const baseList = classNode.childForFieldName('bases');
         if (baseList) {
           for (const child of baseList.namedChildren) {
-            const baseName = child.text.split('<')[0].trim(); // strip generics
+            const baseName = child.text.split('<')[0].trim();
             if (!baseName) continue;
-            // We can't tell if it's a class or interface statically without type info,
-            // so use a generic "class" node as target and mark reason clearly
             const parentId = makeNodeId('class', filePath, baseName);
             edges.push({
               id: makeEdgeId(classId, 'inherits', parentId),
@@ -211,9 +213,190 @@ export class CSharpAdapter implements LanguageAdapter {
             });
           }
         }
+
+        // Extract methods inside this class
+        this.extractClassMethods(classNode, filePath, classId, className, nodes, edges);
       }
     } catch {
       // Gracefully skip
+    }
+  }
+
+  private extractClassMethods(
+    classNode: Parser.SyntaxNode,
+    filePath: string,
+    classId: string,
+    className: string,
+    nodes: Omit<GraphNode, 'updatedAt'>[],
+    edges: Omit<GraphEdge, 'updatedAt'>[],
+  ): void {
+    try {
+      const methodNodes = [
+        ...this.findNodesByType(classNode, 'method_declaration'),
+        ...this.findNodesByType(classNode, 'constructor_declaration'),
+      ];
+      const seenMethods = new Set<string>();
+
+      for (const methodNode of methodNodes) {
+        const nameNode = methodNode.childForFieldName('name');
+        const methodName = nameNode?.text ?? className; // constructor uses class name
+        const qualifiedName = `${className}.${methodName}`;
+        if (seenMethods.has(qualifiedName)) continue;
+        seenMethods.add(qualifiedName);
+
+        const returnTypeNode = methodNode.childForFieldName('type');
+        const returnType = returnTypeNode?.text ?? 'void';
+
+        const methodId = makeNodeId('method', filePath, qualifiedName);
+
+        nodes.push({
+          id: methodId,
+          kind: 'method',
+          name: methodName,
+          filePath,
+          description: `${className}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
+          isExternal: false,
+          language: 'csharp',
+          meta: JSON.stringify({ returnType, className }),
+        });
+
+        // class contains method
+        edges.push({
+          id: makeEdgeId(classId, 'contains', methodId),
+          fromId: classId,
+          toId: methodId,
+          kind: 'contains',
+          reason: `${className} defines method ${methodName}`,
+        });
+
+        // Extract calls from this method body
+        this.extractCalls(methodNode, filePath, methodId, nodes, edges);
+      }
+    } catch {
+      // Gracefully skip
+    }
+  }
+
+  private extractCalls(
+    methodNode: Parser.SyntaxNode,
+    filePath: string,
+    callerMethodId: string,
+    nodes: Omit<GraphNode, 'updatedAt'>[],
+    edges: Omit<GraphEdge, 'updatedAt'>[],
+  ): void {
+    try {
+      const invocations = this.findNodesByType(methodNode, 'invocation_expression');
+      const seenCalls = new Set<string>();
+
+      for (const invocation of invocations) {
+        // Parse the invocation to get the method being called
+        // Patterns: obj.Method(...), Method(...), this.Method(...), base.Method(...)
+        const funcNode = invocation.childForFieldName('function');
+        if (!funcNode) continue;
+
+        let calledName = '';
+        if (funcNode.type === 'member_access_expression') {
+          const nameChild = funcNode.childForFieldName('name');
+          calledName = nameChild?.text ?? '';
+        } else if (funcNode.type === 'identifier') {
+          calledName = funcNode.text;
+        } else {
+          calledName = funcNode.text;
+        }
+
+        if (!calledName || calledName.length > 60) continue;
+        if (seenCalls.has(calledName)) continue;
+        seenCalls.add(calledName);
+
+        // Try to find a matching method node in the same file
+        const targetId = this.findMethodTarget(calledName, filePath, nodes);
+        if (targetId) {
+          const edgeId = makeEdgeId(callerMethodId, 'calls', targetId);
+          if (!edges.find((e) => e.id === edgeId)) {
+            edges.push({
+              id: edgeId,
+              fromId: callerMethodId,
+              toId: targetId,
+              kind: 'calls',
+              reason: `calls ${calledName}`,
+            });
+          }
+        }
+      }
+
+      // Also extract object_creation_expression (new Foo())
+      const creations = this.findNodesByType(methodNode, 'object_creation_expression');
+      for (const creation of creations) {
+        const typeNode = creation.childForFieldName('type');
+        if (!typeNode) continue;
+        const typeName = typeNode.text.split('<')[0].trim();
+        if (!typeName || typeName.length > 60 || seenCalls.has(`new:${typeName}`)) continue;
+        seenCalls.add(`new:${typeName}`);
+
+        // Link to the class constructor or class itself
+        const targetClassId = this.findClassTarget(typeName, filePath, nodes);
+        if (targetClassId) {
+          const edgeId = makeEdgeId(callerMethodId, 'calls', targetClassId);
+          if (!edges.find((e) => e.id === edgeId)) {
+            edges.push({
+              id: edgeId,
+              fromId: callerMethodId,
+              toId: targetClassId,
+              kind: 'calls',
+              reason: `instantiates ${typeName}`,
+            });
+          }
+        }
+      }
+    } catch {
+      // Gracefully skip
+    }
+  }
+
+  private findMethodTarget(
+    methodName: string,
+    filePath: string,
+    nodes: Omit<GraphNode, 'updatedAt'>[],
+  ): string | null {
+    // Look for a method node matching the name in the same file
+    for (const n of nodes) {
+      if (n.kind === 'method' && n.name === methodName && n.filePath === filePath) {
+        return n.id;
+      }
+    }
+    return null;
+  }
+
+  private findClassTarget(
+    className: string,
+    filePath: string,
+    nodes: Omit<GraphNode, 'updatedAt'>[],
+  ): string | null {
+    for (const n of nodes) {
+      if (n.kind === 'class' && n.name === className && n.filePath === filePath) {
+        return n.id;
+      }
+    }
+    return null;
+  }
+
+  private extractParams(methodNode: Parser.SyntaxNode): string {
+    try {
+      const paramList = methodNode.childForFieldName('parameters');
+      if (!paramList) return '';
+      const params: string[] = [];
+      for (const child of paramList.namedChildren) {
+        if (child.type === 'parameter') {
+          const typeNode = child.childForFieldName('type');
+          const nameNode = child.childForFieldName('name');
+          if (typeNode && nameNode) {
+            params.push(`${typeNode.text} ${nameNode.text}`);
+          }
+        }
+      }
+      return truncate(params.join(', '), 80);
+    } catch {
+      return '';
     }
   }
 
@@ -244,12 +427,13 @@ export class CSharpAdapter implements LanguageAdapter {
           meta: '{}',
         });
 
+        // file contains interface
         edges.push({
-          id: makeEdgeId(fileNodeId, 'exports', ifaceId),
+          id: makeEdgeId(fileNodeId, 'contains', ifaceId),
           fromId: fileNodeId,
           toId: ifaceId,
-          kind: 'exports',
-          reason: `defines interface ${ifaceName}`,
+          kind: 'contains',
+          reason: `file defines interface ${ifaceName}`,
         });
 
         // Base interfaces
@@ -268,28 +452,63 @@ export class CSharpAdapter implements LanguageAdapter {
             });
           }
         }
+
+        // Extract method signatures from interface
+        const methodDecls = this.findNodesByType(ifaceNode, 'method_declaration');
+        for (const methodNode of methodDecls) {
+          const methNameNode = methodNode.childForFieldName('name');
+          if (!methNameNode) continue;
+          const methodName = methNameNode.text;
+          const qualifiedName = `${ifaceName}.${methodName}`;
+          const methodId = makeNodeId('method', filePath, qualifiedName);
+          const returnTypeNode = methodNode.childForFieldName('type');
+          const returnType = returnTypeNode?.text ?? 'void';
+
+          nodes.push({
+            id: methodId,
+            kind: 'method',
+            name: methodName,
+            filePath,
+            description: `${ifaceName}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
+            isExternal: false,
+            language: 'csharp',
+            meta: JSON.stringify({ returnType, interfaceName: ifaceName }),
+          });
+
+          edges.push({
+            id: makeEdgeId(ifaceId, 'contains', methodId),
+            fromId: ifaceId,
+            toId: methodId,
+            kind: 'contains',
+            reason: `${ifaceName} declares method ${methodName}`,
+          });
+        }
       }
     } catch {
       // Gracefully skip
     }
   }
 
-  private extractMethods(
+  private extractTopLevelMethods(
     tree: Parser.Tree,
-    _lang: Parser.Language,
     filePath: string,
     fileNodeId: string,
     nodes: Omit<GraphNode, 'updatedAt'>[],
     edges: Omit<GraphEdge, 'updatedAt'>[],
   ): void {
     try {
-      const methodNodes = [
-        ...this.findNodesByType(tree.rootNode, 'method_declaration'),
-        ...this.findNodesByType(tree.rootNode, 'constructor_declaration'),
-      ];
-      const seen = new Set<string>();
+      // Only extract methods that are direct children of namespace or compilation_unit
+      // (not inside a class — those are handled by extractClassMethods)
+      const topLevelMethods: Parser.SyntaxNode[] = [];
+      for (const child of tree.rootNode.children) {
+        if (child.type === 'global_statement') {
+          const localFuncs = this.findNodesByType(child, 'local_function_statement');
+          topLevelMethods.push(...localFuncs);
+        }
+      }
 
-      for (const methodNode of methodNodes) {
+      const seen = new Set<string>();
+      for (const methodNode of topLevelMethods) {
         const nameNode = methodNode.childForFieldName('name');
         if (!nameNode) continue;
         const methodName = nameNode.text;
@@ -298,26 +517,25 @@ export class CSharpAdapter implements LanguageAdapter {
 
         const returnTypeNode = methodNode.childForFieldName('type');
         const returnType = returnTypeNode?.text ?? 'void';
-
-        const methodId = makeNodeId('method', filePath, methodName);
+        const methodId = makeNodeId('function', filePath, methodName);
 
         nodes.push({
           id: methodId,
-          kind: 'method',
+          kind: 'function',
           name: methodName,
           filePath,
-          description: `Method ${methodName}: ${returnType}`,
+          description: `Top-level function ${methodName}: ${returnType}`,
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ returnType }),
         });
 
         edges.push({
-          id: makeEdgeId(fileNodeId, 'exports', methodId),
+          id: makeEdgeId(fileNodeId, 'contains', methodId),
           fromId: fileNodeId,
           toId: methodId,
-          kind: 'exports',
-          reason: `defines method ${methodName}`,
+          kind: 'contains',
+          reason: `file defines function ${methodName}`,
         });
       }
     } catch {

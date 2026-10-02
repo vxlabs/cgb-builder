@@ -4,7 +4,12 @@
       "Bash(grep -n \"CREATE TABLE\" /c/Users/sadiq/Desktop/Projects/cgb-builder-wiki/code-review-graph-main/code_review_graph/*.py)",
       "Bash(npm run:*)",
       "Bash(npm install:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(node:*)",
+      "Bash(npm test:*)",
+      "Read(//tmp/**)",
+      "Read(//c/Users/sadiq/Desktop/Projects/vxlabs_website/backend/**)",
+      "Bash(grep -oP '\"nodes\":\\\\[.{0,20}' \"C:\\\\Users\\\\sadiq\\\\Desktop\\\\Projects\\\\vxlabs_website\\\\backend\\\\graph.html\")"
     ]
   }
 }

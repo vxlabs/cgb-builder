@@ -374,6 +374,12 @@ export class GraphDb {
     return Object.fromEntries(rows[0].values.map(([kind, cnt]) => [kind as string, cnt as number]));
   }
 
+  getEdgeCountByKind(): Record<string, number> {
+    const rows = this.db.exec('SELECT kind, COUNT(*) as cnt FROM edges GROUP BY kind');
+    if (!rows.length) return {};
+    return Object.fromEntries(rows[0].values.map(([kind, cnt]) => [kind as string, cnt as number]));
+  }
+
   // ─── All Edges (for traversal) ────────────────────────────────────────────
 
   getAllEdges(): GraphEdge[] {
