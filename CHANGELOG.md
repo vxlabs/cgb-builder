@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [1.2.0] - 2026-10-02
+
+Headless-use release (library + JSON CLIs + read-only MCP).
+
+### Added
+- `--db-dir <path>` on every graph command and `GraphDb` option `dbDir` / env `CGB_DB_DIR` (precedence: option > env > `<root>/.cgb`); `GraphDb` option `readOnly`.
+- Library exports: `CommunityDetector`, `FlowsAnalyzer`, `findLargeFunctions`, `WikiGenerator`, `buildReviewContext`, `formatReviewContext`, `openGraph`, `initGraph`, `relativizePaths` and their result types.
+- CLI: `cgb communities [--top N] [--overview] [--json]`, `cgb flows [--top N] [--chain <entry>] [--depth N] [--json]`, `cgb wiki --json`, `cgb init [path]`.
+- `cgb mcp --read-only [--db-dir] [--root]`: serves only non-mutating tools, never writes, local embeddings only.
+- `embed.hybridSearch` option `localOnly`.
+
+### Changed
+- The graph DB now stores node ids and file paths **relative to the project root**; the in-memory API still exposes absolute paths. A DB created by 1.1.x must be rebuilt (`cgb init --force`).
+- `cgb init` prunes files that no longer exist.
+- `review-context --format json` is deterministic: sorted arrays, no timestamps, root-relative paths.
+- `ChangeAnalysis.changes` ties on risk score are now ordered by path.
+- Lint is clean (`npm run lint` exits 0); test files are excluded from typed linting.
+
+### Fixed
+- `docs/COMMANDS.md` now matches the real CLI (`communities` and `flows` commands exist).
+
+---
+
 ## [1.1.0] - 2026-04-05
 
 ### Added

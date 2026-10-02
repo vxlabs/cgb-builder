@@ -60,6 +60,17 @@
 | Cross-repo search | `cgb registry search` | `cgb_registry_search` |
 | Registry info | — | `cgb_registry_list` |
 
+## Headless / programmatic use
+
+| Feature | Where |
+|---------|-------|
+| Graph DB outside the worktree | `--db-dir`, env `CGB_DB_DIR`, `new GraphDb(root, { dbDir })` |
+| Root-relative stored paths (cache valid for any worktree) | `GraphDb` |
+| One-call open / scan | `openGraph({ root, dbDir })`, `initGraph({ root, dbDir })` |
+| Library analyses | `CommunityDetector`, `FlowsAnalyzer`, `findLargeFunctions`, `WikiGenerator`, `buildReviewContext` |
+| JSON CLIs | `cgb communities --json`, `cgb flows --json`, `cgb wiki --json`, `cgb review-context --format json` |
+| Read-only MCP | `cgb mcp --read-only` |
+
 ## Languages Supported
 
 TypeScript · JavaScript · Python · Rust · Go · Ruby · PHP · C · C++ · Kotlin · Jupyter Notebooks
