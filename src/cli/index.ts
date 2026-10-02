@@ -34,6 +34,16 @@ function resolveRoot(options: { root?: string }): string {
   return abs;
 }
 
+function readVersion(): string {
+  try {
+    // dist/cli -> package root, and src/cli -> package root under ts-node
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- JSON outside rootDir; read at runtime
+    return (require('../../package.json') as { version?: string }).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
 // ─── CLI definition ───────────────────────────────────────────────────────────
 
 const program = new Command();
@@ -41,7 +51,7 @@ const program = new Command();
 program
   .name('cgb')
   .description('Code Graph Builder — build and query a dependency graph for AI context bundles')
-  .version('1.2.0');
+  .version(readVersion());
 
 // ─── init ─────────────────────────────────────────────────────────────────────
 

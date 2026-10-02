@@ -3,7 +3,7 @@
   "name": "cgb-builder",
   "display_name": "Code Graph Builder",
   "description": "Analyses TypeScript, Python, Rust, and 8 other languages to produce a queryable code graph. Provides tools for dependency analysis, impact estimation, architecture exploration, refactoring assistance, and AI context bundles.",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "author": "cgb-builder contributors",
   "homepage": "https://github.com/vxlabs/cgb-builder",
   "logo": "https://raw.githubusercontent.com/vxlabs/cgb-builder/main/assets/logo.png",

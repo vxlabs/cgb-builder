@@ -6,13 +6,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [1.3.1] - 2026-10-03
+
+Headless-use release (library, JSON CLIs, read-only MCP). Supersedes 1.3.0, whose tagged
+commit does not compile (stray merge-conflict markers in `src/cli/index.ts`,
+`src/mcp/server.ts` and `src/parser/index.ts`).
+
+### Added
+- `--db-dir <path>` on every graph command, `GraphDb` option `dbDir` and env `CGB_DB_DIR` (precedence: option > env > `<root>/.cgb`); `GraphDb` option `readOnly`
+- Library exports: `openGraph`, `initGraph`, `CommunityDetector`, `FlowsAnalyzer`, `findLargeFunctions`, `WikiGenerator`, `buildReviewContext`, `formatReviewContext`, `relativizePaths` and their result types
+- CLI: `cgb communities [--top N] [--overview] [--json]`, `cgb flows [--top N] [--chain <entry>] [--depth N] [--json]`, `cgb wiki --json`, `cgb init [path]`
+- `cgb mcp --read-only [--db-dir] [--root]`: serves only non-mutating tools, skips auto-refresh, never writes, local embeddings only; `callTool` / `listTools` / `READ_ONLY_TOOLS` exported for embedding
+- `hybridSearch` option `localOnly`
+- `prepare` script so git-tag installs compile `dist`
+
+### Changed
+- Graph DB stores paths and node ids **root-relative with POSIX separators** (schema v3), so one cached DB serves every worktree (and OS) of a repository; the in-memory API still exposes absolute paths. Older DBs are rebuilt automatically; a read-only open of an older DB fails with a hint to run `cgb init`
+- `review-context --format json` is deterministic: sorted arrays, no timestamps, root-relative `/` paths
+- `ChangeAnalysis.changes` ties on risk score are ordered by path
+
+### Fixed
+- Build failure in 1.3.0 (merge-conflict markers)
+- `cgb --version` reports the package version (was hard-coded `1.2.0`)
+
+---
+
 ## [1.3.0] - 2026-10-02
 
 ### Added
 
 #### Storage & Database
 - **better-sqlite3** replaces sql.js for native performance (WAL mode, no FK cascades fixing stale edges)
-- **Schema v3** — stores line ranges, signatures, docs, exported flag, and modifiers for all languages
+- **Schema v2** — stores line ranges, signatures, docs, exported flag, and modifiers for all languages
 - **FTS5 index** for full-text search with BM25 ranking
 - Automatic database rebuild on upgrade (existing `graph.db` files rebuilt on first run)
 
@@ -48,24 +73,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 - **Batched traversals** for performance
 - **Lint/format enforced in CI**
 
-#### Headless use (library, JSON CLIs, read-only MCP)
-- `--db-dir <path>` on every graph command, `GraphDb` option `dbDir` and env `CGB_DB_DIR` (precedence: option > env > `<root>/.cgb`); `GraphDb` option `readOnly`
-- Graph DB stores paths and node ids **root-relative with POSIX separators**, so one cached DB serves every worktree (and OS) of a repository; the in-memory API still exposes absolute paths
-- Library exports: `openGraph`, `initGraph`, `CommunityDetector`, `FlowsAnalyzer`, `findLargeFunctions`, `WikiGenerator`, `buildReviewContext`, `formatReviewContext`, `relativizePaths` and their result types
-- CLI: `cgb communities [--top N] [--overview] [--json]`, `cgb flows [--top N] [--chain <entry>] [--depth N] [--json]`, `cgb wiki --json`, `cgb init [path]`
-- `cgb mcp --read-only [--db-dir] [--root]`: serves only non-mutating tools, skips auto-refresh, never writes, local embeddings only; `callTool` / `listTools` / `READ_ONLY_TOOLS` exported for embedding
-- `hybridSearch` option `localOnly`
-- `prepare` script so git-tag installs compile `dist`
-
 ### Changed
 - `install --platform claude` now targets Claude Code (use `claude-desktop` for old behavior)
 - MCP output is compact JSON with repo-relative paths (node IDs stay absolute)
 - `cgb_detect_changes` with no base diffs working tree vs HEAD (previously HEAD~1..HEAD)
-- `review-context --format json` is deterministic: sorted arrays, no timestamps, root-relative `/` paths
-- `ChangeAnalysis.changes` ties on risk score are ordered by path
 
 ### Breaking
-- Existing `.cgb/graph.db` files are automatically rebuilt on first run (schema v3; a read-only open of an older DB fails with a hint to run `cgb init`)
+- Existing `.cgb/graph.db` files are automatically rebuilt on first run
 - sql.js removed (was optional before)
 
 ### Fixed
