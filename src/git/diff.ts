@@ -83,10 +83,14 @@ export function getDefaultBranch(root: string): string {
 }
 
 /**
- * Returns the git repo root for a given directory.
+ * Returns the git repo root for a given directory, spelled relative to `root`.
+ *
+ * `--show-toplevel` returns git's canonical path, which can differ from the caller's
+ * spelling (Windows 8.3 short names like `RUNNER~1`, symlinked dirs like macOS `/var`).
+ * Resolving `--show-cdup` against `root` keeps paths comparable with ones derived from `root`.
  */
 export function getRepoRoot(root: string): string {
-  return run(['rev-parse', '--show-toplevel'], root) || root;
+  return path.resolve(root, run(['rev-parse', '--show-cdup'], root));
 }
 
 /**
