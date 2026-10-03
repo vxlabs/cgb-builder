@@ -1,6 +1,6 @@
 {
   "name": "cgb-builder",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "Automated polyglot code graph builder for AI-ready context bundles",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -6,6 +6,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [1.3.2] - 2026-10-03
+
+### Fixed
+- File-node `imports` / `reexports` meta is stored root-relative, so `graph.db` no longer leaks the project root
+- `review-context` changed files were left absolute when the root's spelling differed from git's canonical path (Windows 8.3 short names such as `RUNNER~1`, symlinked directories); the repo root now keeps the caller's spelling
+
 ## [1.3.1] - 2026-10-03
 
 Headless-use release (library, JSON CLIs, read-only MCP). Supersedes 1.3.0, whose tagged
