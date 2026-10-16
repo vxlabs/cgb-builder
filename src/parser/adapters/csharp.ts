@@ -26,6 +26,17 @@ import {
 } from '../utils.js';
 import type { GraphEdge, GraphNode, ParsedFile } from '../../types.js';
 
+/** Declarations that contribute a segment to a nested type's fully-qualified name. */
+const TYPE_DECLS = new Set([
+  'class_declaration',
+  'record_declaration',
+  'record_struct_declaration',
+  'struct_declaration',
+  'interface_declaration',
+  'enum_declaration',
+]);
+const NAMESPACE_DECLS = new Set(['namespace_declaration', 'file_scoped_namespace_declaration']);
+
 // ─── CSharpAdapter ────────────────────────────────────────────────────────────
 
 export class CSharpAdapter implements LanguageAdapter {
@@ -34,6 +45,7 @@ export class CSharpAdapter implements LanguageAdapter {
   async parse(filePath: string, source: string): Promise<ParsedFile> {
     const tree = await treeSitterEngine.parse(source, 'csharp');
     this.src = source;
+    this.fileNamespace = this.findFileScopedNamespace(tree.rootNode);
     const langObj = await treeSitterEngine.loadLanguage('csharp');
 
     const nodes: Omit<GraphNode, 'updatedAt'>[] = [];
@@ -75,6 +87,84 @@ export class CSharpAdapter implements LanguageAdapter {
   // ─── Private helpers ───────────────────────────────────────────────────────
 
   private src = '';
+  /** `namespace X;` of the current file ('' if none). */
+  private fileNamespace = '';
+
+  // ─── Fully-qualified names ─────────────────────────────────────────────────
+
+  private findFileScopedNamespace(root: Parser.SyntaxNode): string {
+    for (const child of root.namedChildren) {
+      if (child.type === 'file_scoped_namespace_declaration') {
+        return child.childForFieldName('name')?.text.replace(/\s+/g, '') ?? '';
+      }
+    }
+    return '';
+  }
+
+  /**
+   * Dotted namespace + enclosing type chain of a declaration, excluding the declaration itself
+   * (e.g. "App.Services.Outer" for a member of nested class Outer in namespace App.Services).
+   */
+  private qualifier(node: Parser.SyntaxNode): string {
+    const parts: string[] = [];
+    let inNamespace = false;
+    for (let p = node.parent; p; p = p.parent) {
+      const isNs = NAMESPACE_DECLS.has(p.type);
+      if (!isNs && !TYPE_DECLS.has(p.type)) continue;
+      const name = p.childForFieldName('name')?.text.replace(/\s+/g, '');
+      if (name) parts.unshift(name);
+      if (isNs) inNamespace = true;
+    }
+    // Older grammars make declarations after `namespace X;` siblings, not children.
+    if (!inNamespace && this.fileNamespace) parts.unshift(this.fileNamespace);
+    return parts.join('.');
+  }
+
+  /** FQN of a type declaration: "Ns.Outer.Inner". */
+  private typeFqn(typeNode: Parser.SyntaxNode, name: string): string {
+    const q = this.qualifier(typeNode);
+    return q ? `${q}.${name}` : name;
+  }
+
+  /** FQN of a method or constructor, always with parameter types: "Ns.Cls.Find(int, string)". */
+  private methodFqn(methodNode: Parser.SyntaxNode, name: string): string {
+    const q = this.qualifier(methodNode);
+    return `${q ? `${q}.` : ''}${name}(${this.paramTypes(methodNode)})`;
+  }
+
+  /** Parameter types (with ref/out/in/params/this modifiers), names and defaults dropped. */
+  private paramTypes(methodNode: Parser.SyntaxNode): string {
+    const list = methodNode.childForFieldName('parameters');
+    if (!list) return '';
+    const types: string[] = [];
+    for (const param of list.namedChildren) {
+      if (param.type !== 'parameter' && param.type !== 'parameter_array') continue;
+      const parts = param.children.filter((c) => c.type !== 'attribute_list');
+      if (parts.length === 0) continue;
+      const nameNode =
+        param.childForFieldName('name') ??
+        [...param.namedChildren].reverse().find((c) => c.type === 'identifier');
+      const end = nameNode ? nameNode.startIndex : param.endIndex;
+      const text = this.src
+        .slice(parts[0].startIndex, end)
+        .replace(/\s*([<>[\]?,])\s*/g, '$1')
+        .replace(/\s+/g, ' ')
+        .replace(/,/g, ', ')
+        .trim();
+      if (text) types.push(text);
+    }
+    return types.join(', ');
+  }
+
+  /** True when `member`'s nearest enclosing type declaration is `typeNode` (not a nested type). */
+  private directMemberOf(member: Parser.SyntaxNode, typeNode: Parser.SyntaxNode): boolean {
+    for (let p = member.parent; p; p = p.parent) {
+      if (TYPE_DECLS.has(p.type)) {
+        return p.startIndex === typeNode.startIndex && p.type === typeNode.type;
+      }
+    }
+    return false;
+  }
 
   /** Line range, signature, doc comment and export flag for a declaration node. */
   private meta(
@@ -216,6 +306,7 @@ export class CSharpAdapter implements LanguageAdapter {
           filePath,
           description: `Class ${className}. ${snippet}`,
           ...this.meta(classNode),
+          fqn: this.typeFqn(classNode, className),
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ isRecord: classNode.type === 'record_declaration' }),
@@ -264,10 +355,11 @@ export class CSharpAdapter implements LanguageAdapter {
     edges: Omit<GraphEdge, 'updatedAt'>[],
   ): void {
     try {
+      // Members of nested types belong to the nested type's own node.
       const methodNodes = [
         ...this.findNodesByType(classNode, 'method_declaration'),
         ...this.findNodesByType(classNode, 'constructor_declaration'),
-      ];
+      ].filter((m) => this.directMemberOf(m, classNode));
       const seenMethods = new Set<string>();
 
       for (const methodNode of methodNodes) {
@@ -289,6 +381,7 @@ export class CSharpAdapter implements LanguageAdapter {
           filePath,
           description: `${className}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
           ...this.meta(methodNode),
+          fqn: this.methodFqn(methodNode, methodName),
           isExternal: false,
           language: 'csharp',
           meta: JSON.stringify({ returnType, className }),
@@ -458,6 +551,7 @@ export class CSharpAdapter implements LanguageAdapter {
           filePath,
           description: `Interface ${ifaceName}`,
           ...this.meta(ifaceNode),
+          fqn: this.typeFqn(ifaceNode, ifaceName),
           isExternal: false,
           language: 'csharp',
           meta: '{}',
@@ -490,7 +584,9 @@ export class CSharpAdapter implements LanguageAdapter {
         }
 
         // Extract method signatures from interface
-        const methodDecls = this.findNodesByType(ifaceNode, 'method_declaration');
+        const methodDecls = this.findNodesByType(ifaceNode, 'method_declaration').filter((m) =>
+          this.directMemberOf(m, ifaceNode),
+        );
         for (const methodNode of methodDecls) {
           const methNameNode = methodNode.childForFieldName('name');
           if (!methNameNode) continue;
@@ -507,6 +603,7 @@ export class CSharpAdapter implements LanguageAdapter {
             filePath,
             description: `${ifaceName}.${methodName}(${this.extractParams(methodNode)}): ${returnType}`,
             ...this.meta(methodNode),
+            fqn: this.methodFqn(methodNode, methodName),
             isExternal: false,
             language: 'csharp',
             meta: JSON.stringify({ returnType, interfaceName: ifaceName }),
