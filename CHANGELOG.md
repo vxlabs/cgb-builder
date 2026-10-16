@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and 
 
 ---
 
+## [Unreleased]
+
+### Added
+- Fully-qualified names: nullable `nodes.fqn` column with a unique index, filled by the C# adapter
+  (`Namespace.Class`, `Namespace.Class.Method(int, string)`); `cgb_symbol` (`fqn` argument, or a
+  dotted `name`) and `cgb_search` look nodes up by it. Schema version 4: re-run `cgb init`.
+
+### Changed
+- C# members of a nested type are attributed only to the nested type, not also to the outer class
+
 ## [1.3.2] - 2026-10-03
 
 ### Fixed

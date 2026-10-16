@@ -610,6 +610,53 @@ describe('csharp adapter', () => {
       expect.arrayContaining(['external_dep:System', 'external_dep:App']),
     );
   });
+  it('sets fully-qualified names from namespace, enclosing types and parameter types', async () => {
+    const v = await parseSnippet(
+      new CSharpAdapter(),
+      'src/Fqn.cs',
+      [
+        'namespace App.Services {',
+        '  public interface IRepo { void Save(string key, int[] values); }',
+        '  public class Outer {',
+        '    public Outer(int size) {}',
+        '    public void Find(ref int id, List<string> names, params object[] rest) {}',
+        '    public class Inner {',
+        '      public static void Run() {}',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+    );
+    expect(v.node('interface', 'IRepo')!.fqn).toBe('App.Services.IRepo');
+    expect(v.node('method', 'IRepo.Save')!.fqn).toBe('App.Services.IRepo.Save(string, int[])');
+    expect(v.node('class', 'Outer')!.fqn).toBe('App.Services.Outer');
+    expect(v.node('method', 'Outer.Outer')!.fqn).toBe('App.Services.Outer.Outer(int)');
+    expect(v.node('method', 'Outer.Find')!.fqn).toBe(
+      'App.Services.Outer.Find(ref int, List<string>, params object[])',
+    );
+    expect(v.node('class', 'Inner')!.fqn).toBe('App.Services.Outer.Inner');
+    expect(v.node('method', 'Inner.Run')!.fqn).toBe('App.Services.Outer.Inner.Run()');
+    // nested members belong to the nested type only
+    expect(v.node('method', 'Outer.Run')).toBeUndefined();
+    // namespaces span files, so they get no fqn
+    expect(v.node('module', 'App.Services')!.fqn).toBeUndefined();
+  });
+  it('uses a file-scoped namespace and leaves global types unqualified', async () => {
+    const scoped = await parseSnippet(
+      new CSharpAdapter(),
+      'src/Scoped.cs',
+      'namespace App.Core;\npublic class Svc { public int Get() { return 1; } }\n',
+    );
+    expect(scoped.node('class', 'Svc')!.fqn).toBe('App.Core.Svc');
+    expect(scoped.node('method', 'Svc.Get')!.fqn).toBe('App.Core.Svc.Get()');
+    const global = await parseSnippet(
+      new CSharpAdapter(),
+      'src/Global.cs',
+      'public class Plain { void Go(int a) {} }\n',
+    );
+    expect(global.node('class', 'Plain')!.fqn).toBe('Plain');
+    expect(global.node('method', 'Plain.Go')!.fqn).toBe('Plain.Go(int)');
+  });
   it.todo(
     'csharp: interface implementation is emitted as inherits (Greeter -> ISpeaker), not implements',
   );

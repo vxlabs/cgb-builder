@@ -53,6 +53,12 @@ Every named symbol extracted from source files.
 | `doc` | TEXT | First paragraph of the leading doc comment, max 300 chars (nullable; v2) |
 | `exported` | INTEGER | `1`/`0` exported flag, NULL = unknown (v2) |
 | `modifiers` | TEXT | JSON array, subset of `async static abstract private protected public readonly default generator getter setter`, or NULL (v2) |
+| `fqn` | TEXT | Fully-qualified name, unique per repo, e.g. `App.Svc.Find(int, string)` (methods always carry parameter types); NULL when unknown. Set by the C# adapter only (v4) |
+
+There is one DB per repository, so the unique index on `fqn` is unique per repo. On a clash
+(a partial class split across files, the same type declared in two projects) the first node
+written keeps the `fqn` and later ones store NULL, so writes never fail. Namespaces span
+files and get no `fqn`.
 
 ### `edges`
 
@@ -86,6 +92,7 @@ CREATE INDEX idx_nodes_file_path ON nodes(file_path);
 CREATE INDEX idx_nodes_kind      ON nodes(kind);
 CREATE INDEX idx_nodes_name      ON nodes(name);
 CREATE INDEX idx_nodes_community ON nodes(community_id);
+CREATE UNIQUE INDEX idx_nodes_fqn ON nodes(fqn);   -- NULLs never clash
 CREATE INDEX idx_edges_from_id   ON edges(from_id);
 CREATE INDEX idx_edges_to_id     ON edges(to_id);
 CREATE INDEX idx_edges_kind      ON edges(kind);
@@ -113,6 +120,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(
 `searchNodesRanked(query, opts?)` (`opts` is a number limit or `{ limit (default 30, max 500), kinds, includeExternal (default false) }`)
 returns `{ id, score, matchedBy: 'exact' | 'prefix' | 'fts' }[]`; `searchNodes` returns the same order as `GraphNode[]`.
 
+0. **fqn** (reported as `exact`): `fqn = ?`, or `fqn LIKE 'query(%'` (every overload). Score 1100.
 1. **exact**: `name = ? COLLATE NOCASE`, or the last segment of `Class.method` names. Score 1000.
 2. **prefix**: `name LIKE 'query%'`. Score `500 - min(len(name) - len(query), 400)`.
 3. **fts**: `splitIdentifier(query)` tokens, each double-quoted with a `*` suffix, AND-ed; if empty, retried with OR.
@@ -131,8 +139,8 @@ falls back to a TF-IDF centroid query vector.
 ## Versioning
 
 The schema version is stored in `PRAGMA user_version` and exported as `SCHEMA_VERSION`
-(`src/graph/db.ts`). Current version: **3** (v2 added the metadata columns and `nodes_fts`;
-v3 stores paths and node ids root-relative, see below).
+(`src/graph/db.ts`). Current version: **4** (v2 added the metadata columns and `nodes_fts`;
+v3 stores paths and node ids root-relative, see below; v4 added `nodes.fqn`).
 
 ## Path storage
 

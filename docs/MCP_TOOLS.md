@@ -30,7 +30,7 @@ Request the next page with `offset = offset + returned` while `truncated` is tru
 |---|---|---|---|
 | `cgb_init` | Build or refresh the graph | `force` | `{ success, durationMs, parsed, skipped, errors, graph, layers }` |
 | `cgb_stats` | Cheap graph summary | none | `{ files, nodes, edges, byKind, layers, cycleCount, cycles, orphanCount }` |
-| `cgb_symbol` | **First tool when you know a name.** Lookup by name or id with callers, callees and a read hint | `name` or `id`, `kind`, `file`, `limit` (default 5) | `{ query, total, returned, truncated, items }`; each item is a compact node plus `matchedBy`, `callers`, `callees`, `topCallers[5]`, `topCallees[5]`, `container?`, `readHint` |
+| `cgb_symbol` | **First tool when you know a name.** Lookup by name or id with callers, callees and a read hint | `name`, `fqn` or `id`, `kind`, `file`, `limit` (default 5) | `{ query, total, returned, truncated, items }`; each item is a compact node plus `matchedBy`, `callers`, `callees`, `topCallers[5]`, `topCallees[5]`, `container?`, `readHint` |
 | `cgb_callers` | Who calls a symbol (BFS over `calls` edges) | `id`, `depth` (default 1, max 5), paging | `{ target, depth, ...page of { ...compact node, depth, via } }` |
 | `cgb_callees` | What a symbol calls (BFS over `calls` edges) | `id`, `depth` (default 1, max 5), paging | same shape as `cgb_callers` |
 | `cgb_search` | Single search entry point: exact, then prefix, then full-text; optional vectors | `query`, `kinds`, `includeExternal`, `semantic`, `contextFiles`, paging | `{ query, ...page of { ...compact node, matchedBy, score } }` |
@@ -63,9 +63,11 @@ All tools except the registry pair also accept `root`. Errors come back as `isEr
 
 ## Search and symbol lookup
 
-`cgb_search` uses the ranked search from the graph database: exact name first, then prefix, then FTS5 BM25 over name, description and path. `matchedBy` is `exact`, `prefix` or `fts`. When `semantic` is true, or embeddings exist (`cgb_embed_build`) and the query has spaces, it switches to hybrid search, which fuses the lexical ranking with vector similarity (RRF) and reports `matchedBy: "hybrid"`. Without embeddings, hybrid is lexical only. Externals are hidden unless `includeExternal` is true.
+`cgb_search` uses the ranked search from the graph database: a fully-qualified name match first (`matchedBy: "exact"`; see below), then exact name, then prefix, then FTS5 BM25 over name, description and path. `matchedBy` is `exact`, `prefix` or `fts`. When `semantic` is true, or embeddings exist (`cgb_embed_build`) and the query has spaces, it switches to hybrid search, which fuses the lexical ranking with vector similarity (RRF) and reports `matchedBy: "hybrid"`. Without embeddings, hybrid is lexical only. Externals are hidden unless `includeExternal` is true.
 
-`cgb_symbol` tries an exact name match first (class, interface, function, method, type, then file), and falls back to ranked search if nothing matches. `id` takes precedence over `name`. `file` restricts to paths containing that text. `callers` and `callees` count distinct nodes over `calls` edges; `container` is the owning class for methods; `readHint` is `Read <file> lines <a>-<b>`.
+`cgb_symbol` tries an exact name match first (class, interface, function, method, type, then file), and falls back to ranked search if nothing matches. `id` takes precedence over `fqn`, which takes precedence over `name`.
+
+Fully-qualified names (currently C# only) look like `App.Services.UserService` or `App.Services.UserService.Find(int, string)`; methods always carry their parameter types. An `fqn` without a parameter list matches every overload. A `name` containing `.` or `(` is tried as an fqn first (`matchedBy: "fqn"`), then as a plain name. Compact nodes include `fqn` when the node has one. `file` restricts to paths containing that text. `callers` and `callees` count distinct nodes over `calls` edges; `container` is the owning class for methods; `readHint` is `Read <file> lines <a>-<b>`.
 
 `cgb_callers` and `cgb_callees` walk `calls` edges breadth-first with a visited set (so cycles are safe, and each node appears once at its nearest depth). `via` is the edge reason (`call`, `new`, `call via this`, ...); at depth 2 and beyond it also names the intermediate node. Traversal stops at 5000 nodes and sets `capped: true`.
 

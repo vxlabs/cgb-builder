@@ -358,6 +358,67 @@ describe('GraphDb', () => {
     expect(db.getEmbeddingCount()).toBe(1);
   });
 
+  describe('fully-qualified names', () => {
+    const method = (sym: string, fqn: string): GraphNode =>
+      makeNode({
+        id: `method:/tmp/Svc.cs#${sym}`,
+        kind: 'method',
+        name: sym.split('.').pop()!,
+        filePath: '/tmp/Svc.cs',
+        language: 'csharp',
+        fqn,
+      });
+
+    it('round-trips fqn and leaves it unset when absent', () => {
+      db.upsertNode(method('Svc.Find', 'App.Svc.Find(int)'));
+      db.upsertNode(makeNode());
+      expect(db.getNode('method:/tmp/Svc.cs#Svc.Find')!.fqn).toBe('App.Svc.Find(int)');
+      expect(db.getNode('file:/tmp/a.ts')!.fqn).toBeUndefined();
+    });
+
+    it('has a unique index on fqn; a clashing node is stored without one', async () => {
+      db.upsertNode(method('Svc.Find', 'App.Svc.Find(int)'));
+      expect(() => db.upsertNode(method('Other.Find', 'App.Svc.Find(int)'))).not.toThrow();
+      expect(db.getNode('method:/tmp/Svc.cs#Other.Find')!.fqn).toBeUndefined();
+      // re-upserting the owner keeps it
+      db.upsertNode(method('Svc.Find', 'App.Svc.Find(int)'));
+      expect(db.getNode('method:/tmp/Svc.cs#Svc.Find')!.fqn).toBe('App.Svc.Find(int)');
+      db.close();
+      const raw = new Database(path.join(tmpDir, '.cgb', 'graph.db'), { readonly: true });
+      const idx = raw
+        .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_fqn'`)
+        .get() as { sql: string };
+      raw.close();
+      expect(idx.sql).toMatch(/CREATE UNIQUE INDEX .*nodes\(fqn\)/);
+      expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(4); // v4 added fqn
+      db = new GraphDb(tmpDir);
+      await db.init();
+    });
+
+    it('getNodesByFqn: exact match, or every overload without a parameter list', () => {
+      db.upsertNode(method('Svc.Find', 'App.Svc.Find(int)'));
+      db.upsertNode(method('Svc.Find2', 'App.Svc.Find(string)'));
+      db.upsertNode(method('Svc.FindAll', 'App.Svc.FindAll()'));
+      expect(db.getNodesByFqn('App.Svc.Find(string)').map((n) => n.id)).toEqual([
+        'method:/tmp/Svc.cs#Svc.Find2',
+      ]);
+      expect(db.getNodesByFqn('App.Svc.Find').map((n) => n.fqn)).toEqual([
+        'App.Svc.Find(int)',
+        'App.Svc.Find(string)',
+      ]);
+      expect(db.getNodesByFqn('App.Svc.Find(bool)')).toEqual([]);
+      expect(db.getNodesByFqn('App.Svc.Find', ['class'])).toEqual([]);
+    });
+
+    it('searchNodesRanked ranks an fqn match first', () => {
+      db.upsertNode(method('Svc.Find', 'App.Svc.Find(int)'));
+      db.upsertNode(method('Other.Find', 'App.Other.Find(int)'));
+      const ranked = db.searchNodesRanked('App.Svc.Find');
+      expect(ranked[0]).toMatchObject({ id: 'method:/tmp/Svc.cs#Svc.Find', matchedBy: 'exact' });
+      expect(ranked[0].score).toBeGreaterThan(ranked[1]?.score ?? 0);
+    });
+  });
+
   it('close is idempotent and persist is a no-op', () => {
     db.persist();
     db.close();
