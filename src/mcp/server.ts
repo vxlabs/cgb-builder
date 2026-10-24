@@ -271,7 +271,7 @@ const TOOLS = [
   ),
   tool(
     'cgb_symbol',
-    'The first tool to use when you know a name. Looks up a symbol by name or node ID (falls back to ranked search) and returns, per match: ' +
+    'The first tool to use when you know a name. Looks up a symbol by name, fully-qualified name or node ID (falls back to ranked search) and returns, per match: ' +
       'file, line range, signature, doc, caller and callee counts, top 5 callers and callees, containing class and a readHint ("Read <file> lines a-b"). ' +
       'Replaces grep plus read; then use cgb_callers / cgb_callees to walk the call graph.',
     {
@@ -279,6 +279,12 @@ const TOOLS = [
       id: {
         type: 'string',
         description: 'Node ID; repo-relative paths accepted. Takes precedence over name.',
+      },
+      fqn: {
+        type: 'string',
+        description:
+          'Fully-qualified name (C#), e.g. "App.Services.UserService" or "App.Services.UserService.Find(int)"; ' +
+          'without a parameter list every overload matches. Takes precedence over name; dotted names are also tried as fqn.',
       },
       kind: {
         type: 'string',
@@ -321,7 +327,7 @@ const TOOLS = [
   ),
   tool(
     'cgb_search',
-    'Single search entry point. Ranks exact name, then prefix, then full-text matches; returns compact nodes with matchedBy and score, paged. ' +
+    'Single search entry point. Ranks fully-qualified name (e.g. "Ns.Cls.Method"), then exact name, then prefix, then full-text matches; returns compact nodes with matchedBy and score, paged. ' +
       'Conceptual queries (several words) automatically add vector matching when embeddings exist (cgb_embed_build); pass semantic:true to force it.',
     {
       query: { type: 'string', description: 'Search term or free text' },
@@ -714,21 +720,40 @@ function uniqueNodes(rows: Array<{ node: GraphNode }>): GraphNode[] {
 }
 
 async function handleSymbol(
-  args: RootArg & { name?: string; id?: string; kind?: string; file?: string; limit?: number },
+  args: RootArg & {
+    name?: string;
+    id?: string;
+    fqn?: string;
+    kind?: string;
+    file?: string;
+    limit?: number;
+  },
 ) {
   return withGraph(args, ({ root, db, engine }) => {
-    const { name, id, kind, file } = args;
-    if (!name && !id) return err('Provide name or id', 'e.g. {"name":"GraphDb"}');
+    const { name, id, fqn, kind, file } = args;
+    if (!name && !id && !fqn) return err('Provide name, fqn or id', 'e.g. {"name":"GraphDb"}');
     const limit = Math.max(1, Math.min(Math.floor(Number(args.limit) || 5), 50));
     const kinds = kind ? [kind as NodeKind] : undefined;
     const needle = file ? file.split('\\').join('/') : undefined;
     const inFile = (n: GraphNode): boolean => !needle || rel(root, n.filePath).includes(needle);
 
+    const byFqn = (q: string): Array<{ node: GraphNode; matchedBy: string }> =>
+      db
+        .getNodesByFqn(q, kinds)
+        .filter(inFile)
+        .map((node) => ({ node, matchedBy: 'fqn' }));
+
     let matches: Array<{ node: GraphNode; matchedBy: string }> = [];
     if (id) {
       const n = db.getNode(expandId(root, id));
       if (n) matches = [{ node: n, matchedBy: 'id' }];
-    } else if (name) {
+    } else if (fqn) {
+      matches = byFqn(fqn);
+    } else if (name && /[.(]/.test(name)) {
+      // "Ns.Cls.Method" or "Ns.Cls.Method(int)": try it as a fully-qualified name first
+      matches = byFqn(name);
+    }
+    if (!id && !fqn && name && matches.length === 0) {
       matches = db
         .getNodesByName(name, kinds)
         .filter((n) => !n.isExternal && inFile(n))
@@ -744,7 +769,10 @@ async function handleSymbol(
       }
     }
     if (matches.length === 0)
-      return err(`No symbol found for ${id ?? name}`, 'Try cgb_search with a partial name');
+      return err(
+        `No symbol found for ${id ?? fqn ?? name}`,
+        'Try cgb_search with a partial name',
+      );
 
     const items = matches.slice(0, limit).map(({ node, matchedBy }) => {
       const c = compactNode(root, node);
@@ -774,7 +802,7 @@ async function handleSymbol(
       };
     });
     return ok({
-      query: id ?? name,
+      query: id ?? fqn ?? name,
       total: matches.length,
       returned: items.length,
       truncated: matches.length > items.length,

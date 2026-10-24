@@ -21,6 +21,7 @@ export interface CompactNode {
   sig?: string;
   doc?: string;
   exported?: boolean;
+  fqn?: string;
 }
 
 export interface Page<T> {
@@ -109,6 +110,7 @@ export function compactNode(root: string, n: GraphNode): CompactNode {
   if (typeof sig === 'string') out.sig = sig;
   if (typeof doc === 'string') out.doc = doc;
   if (typeof exported === 'boolean') out.exported = exported;
+  if (n.fqn) out.fqn = n.fqn;
   return out;
 }
 

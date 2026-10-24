@@ -40,6 +40,12 @@ export interface GraphNode {
   exported?: boolean;
   /** Subset of: async, static, abstract, private, protected, public, readonly, default, generator, getter, setter */
   modifiers?: string[];
+  /**
+   * Fully-qualified name, unique within a repo, e.g. "App.Services.UserService" or
+   * "App.Services.UserService.Find(int, string)" (methods always carry their parameter types).
+   * Set by adapters that know the namespace; currently C# only.
+   */
+  fqn?: string;
 }
 
 // ─── Edge Types ──────────────────────────────────────────────────────────────

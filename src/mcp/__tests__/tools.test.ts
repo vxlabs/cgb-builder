@@ -22,6 +22,10 @@ beforeAll(async () => {
     "import { helper } from './a';\nexport function mid() {\n  return helper(1);\n}\nexport function helperExtra() {\n  return 0;\n}\n",
   );
   fs.writeFileSync(abs('src/c.ts'), C_TS);
+  fs.writeFileSync(
+    abs('src/Svc.cs'),
+    'namespace App.Data {\n  public class Store {\n    public void Put(int key) {}\n  }\n}\n',
+  );
   const db = new GraphDb(root);
   await db.init();
   await new Parser(db, root).scanAll();
@@ -80,6 +84,23 @@ describe('cgb_symbol', () => {
     expect(none.isError).toBe(true);
   });
 
+  it('looks up by fqn, and tries a dotted name as fqn', async () => {
+    const r = json(await handleTool('cgb_symbol', { fqn: 'App.Data.Store.Put(int)' }));
+    expect(r.items).toHaveLength(1);
+    expect(r.items[0]).toMatchObject({
+      name: 'Put',
+      kind: 'method',
+      file: 'src/Svc.cs',
+      fqn: 'App.Data.Store.Put(int)',
+      matchedBy: 'fqn',
+    });
+    const byName = json(await handleTool('cgb_symbol', { name: 'App.Data.Store' }));
+    expect(byName.items[0]).toMatchObject({ kind: 'class', name: 'Store', matchedBy: 'fqn' });
+    const overloads = json(await handleTool('cgb_symbol', { fqn: 'App.Data.Store.Put' }));
+    expect(overloads.items[0].fqn).toBe('App.Data.Store.Put(int)');
+    expect((await handleTool('cgb_symbol', { fqn: 'App.Data.Nope' })).isError).toBe(true);
+  });
+
   it('errors without name or id', async () => {
     expect((await handleTool('cgb_symbol', {})).isError).toBe(true);
   });
@@ -122,6 +143,13 @@ describe('cgb_search', () => {
     expect(typeof r.items[0].score).toBe('number');
     const extra = r.items.find((i: { name: string }) => i.name === 'helperExtra');
     expect(extra.matchedBy).toBe('prefix');
+  });
+
+  it('finds a node by fully-qualified name first', async () => {
+    const r = json(await handleTool('cgb_search', { query: 'App.Data.Store.Put(int)' }));
+    expect(r.items[0]).toMatchObject({ name: 'Put', fqn: 'App.Data.Store.Put(int)' });
+    const cls = json(await handleTool('cgb_search', { query: 'App.Data.Store' }));
+    expect(cls.items[0]).toMatchObject({ kind: 'class', name: 'Store' });
   });
 
   it('filters by kinds', async () => {

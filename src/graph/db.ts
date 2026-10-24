@@ -28,7 +28,7 @@ import { warnOnce, debug } from '../util/log.js';
 import { splitIdentifier } from '../parser/utils.js';
 
 /** Stored in PRAGMA user_version. Bump to force a drop-and-recreate. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS nodes (
   signature    TEXT,
   doc          TEXT,
   exported     INTEGER,
-  modifiers    TEXT
+  modifiers    TEXT,
+  fqn          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -94,6 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_file_path  ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind       ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_nodes_name       ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_community  ON nodes(community_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_fqn ON nodes(fqn);
 CREATE INDEX IF NOT EXISTS idx_edges_from_id    ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to_id      ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edges_kind       ON edges(kind);
@@ -150,6 +152,7 @@ function optionalNodeFields(obj: Row): Partial<GraphNode> {
   if (obj['signature'] != null) out.signature = obj['signature'] as string;
   if (obj['doc'] != null) out.doc = obj['doc'] as string;
   if (obj['exported'] != null) out.exported = (obj['exported'] as number) === 1;
+  if (obj['fqn'] != null) out.fqn = obj['fqn'] as string;
   if (obj['modifiers'] != null) {
     try {
       out.modifiers = JSON.parse(obj['modifiers'] as string) as string[];
@@ -366,10 +369,11 @@ export class GraphDb {
   // ─── Node Operations ───────────────────────────────────────────────────────
 
   upsertNode(node: GraphNode): void {
+    const id = this.encId(node.id);
     this.stmt(
       `INSERT INTO nodes (id, kind, name, file_path, description, is_external, language, meta, updated_at,
-                          start_line, end_line, signature, doc, exported, modifiers)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          start_line, end_line, signature, doc, exported, modifiers, fqn)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          kind        = excluded.kind,
          name        = excluded.name,
@@ -384,9 +388,10 @@ export class GraphDb {
          signature   = excluded.signature,
          doc         = excluded.doc,
          exported    = excluded.exported,
-         modifiers   = excluded.modifiers`,
+         modifiers   = excluded.modifiers,
+         fqn         = excluded.fqn`,
     ).run(
-      this.encId(node.id),
+      id,
       node.kind,
       node.name,
       this.encPath(node.filePath),
@@ -401,12 +406,27 @@ export class GraphDb {
       node.doc ?? null,
       node.exported === undefined ? null : node.exported ? 1 : 0,
       node.modifiers && node.modifiers.length > 0 ? JSON.stringify(node.modifiers) : null,
+      this.claimableFqn(id, node.fqn),
     );
-    const id = this.encId(node.id);
     const rowid = (this.stmt('SELECT rowid AS r FROM nodes WHERE id = ?').get(id) as Row)[
       'r'
     ] as number;
     this.writeFtsRow(rowid, { ...node, id, filePath: this.encPath(node.filePath) });
+  }
+
+  /**
+   * fqn to store for node `id`: null when absent or already owned by another node. FQNs are
+   * unique per repo (one DB per repo); on a clash (e.g. a partial class split across files, or
+   * the same type declared in two projects) the first node keeps it so the write never fails.
+   */
+  private claimableFqn(id: string, fqn: string | undefined): string | null {
+    if (!fqn) return null;
+    const owner = this.stmt('SELECT id FROM nodes WHERE fqn = ?').get(fqn) as Row | undefined;
+    if (owner && owner['id'] !== id) {
+      debug('db', `fqn ${fqn} already used by ${owner['id'] as string}; not set on ${id}`);
+      return null;
+    }
+    return fqn;
   }
 
   /** Replace the FTS row for a node (FTS rowid == nodes.rowid). Takes the stored id/path. */
@@ -467,6 +487,29 @@ export class GraphDb {
       rows = this.stmt('SELECT * FROM nodes WHERE name = ?').all(name) as Row[];
     }
     return rows.map((r) => this.rowToNode(r));
+  }
+
+  /**
+   * Fully-qualified-name lookup. An exact match wins; otherwise a name without a parameter list
+   * (`Ns.Cls.Method`) returns every overload (`Ns.Cls.Method(int)`, `Ns.Cls.Method(string)`).
+   */
+  getNodesByFqn(fqn: string, kinds?: NodeKind[]): GraphNode[] {
+    const q = fqn.trim();
+    if (!q) return [];
+    const kindOk = (n: GraphNode): boolean => !kinds || kinds.length === 0 || kinds.includes(n.kind);
+    const exact = this.stmt('SELECT * FROM nodes WHERE fqn = ?').get(q) as Row | undefined;
+    if (exact) {
+      const n = this.rowToNode(exact);
+      return kindOk(n) ? [n] : [];
+    }
+    if (q.includes('(')) return [];
+    return (
+      this.stmt(`SELECT * FROM nodes WHERE fqn LIKE ? ESCAPE '\\' ORDER BY fqn`).all(
+        `${escapeLike(q)}(%`,
+      ) as Row[]
+    )
+      .map((r) => this.rowToNode(r))
+      .filter(kindOk);
   }
 
   /** Ranked search (exact name > prefix > FTS5 BM25), deduped. See searchNodesRanked. */
@@ -717,6 +760,17 @@ export class GraphDb {
     };
 
     const esc = escapeLike(q);
+    // 0. fully-qualified name: exact, or every overload when the parameter list is omitted
+    for (const r of run(
+      `SELECT n.id, n.name, n.kind FROM nodes n
+       WHERE (n.fqn = ? OR n.fqn LIKE ? ESCAPE '\\')${filter} LIMIT ?`,
+      q,
+      `${esc}(%`,
+      ...fparams,
+      limit,
+    )) {
+      add(r, 1100, 'exact');
+    }
     // 1. exact (also the last segment of Class.method names)
     for (const r of run(
       `SELECT n.id, n.name, n.kind FROM nodes n
